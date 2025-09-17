@@ -80,9 +80,10 @@ export default function JobForm() {
   };
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setFormData(prev => ({ ...prev, companyPhoto: e.target.files[0] }));
-    }
+        const files = e.target.files;
+        if (files && files[0]) {
+            setFormData(prev => ({ ...prev, companyPhoto: files[0] }));
+        }
   };
 
   return (
