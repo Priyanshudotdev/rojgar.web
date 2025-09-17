@@ -1,0 +1,57 @@
+'use client';
+
+import { FileText, Home, Search, User } from 'lucide-react';
+import { usePathname, useRouter } from 'next/navigation';
+
+export default function JobSeekerBottomNav() {
+  const router = useRouter();
+  const pathname = usePathname();
+
+  const isActive = (path: string) => pathname === path;
+
+  return (
+    <nav className="fixed bottom-0 left-0 w-full flex justify-center z-20">
+      <div className="w-full max-w-sm mx-auto bg-white border-t border-gray-200 rounded-t-xl flex justify-around py-4 px-4">
+        <button
+          onClick={() => router.push('/dashboard/job-seeker')}
+          className={`flex flex-col items-center space-y-1 focus:outline-none ${
+            isActive('/dashboard/job-seeker') ? 'text-green-600' : 'text-gray-400'
+          }`}
+        >
+          <Home className="w-5 h-5" />
+          <span className="text-xs font-medium">Home</span>
+        </button>
+
+        <button
+          onClick={() => router.push('/dashboard/job-seeker/search')}
+          className={`flex flex-col items-center space-y-1 focus:outline-none ${
+            isActive('/dashboard/job-seeker/search') ? 'text-green-600' : 'text-gray-400'
+          }`}
+        >
+          <Search className="w-5 h-5" />
+          <span className="text-xs font-medium">Search</span>
+        </button>
+
+        <button
+          onClick={() => router.push('/dashboard/job-seeker/jobs')}
+          className={`flex flex-col items-center space-y-1 focus:outline-none ${
+            isActive('/dashboard/job-seeker/jobs') ? 'text-green-600' : 'text-gray-400'
+          }`}
+        >
+          <FileText className="w-5 h-5" />
+          <span className="text-xs font-medium">Jobs</span>
+        </button>
+
+        <button
+          onClick={() => router.push('/dashboard/job-seeker/profile')}
+          className={`flex flex-col items-center space-y-1 focus:outline-none ${
+            isActive('/dashboard/job-seeker/profile') ? 'text-green-600' : 'text-gray-400'
+          }`}
+        >
+          <User className="w-5 h-5" />
+          <span className="text-xs font-medium">Profile</span>
+        </button>
+      </div>
+    </nav>
+  );
+}
