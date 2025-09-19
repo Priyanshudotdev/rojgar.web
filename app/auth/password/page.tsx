@@ -58,7 +58,8 @@ export default function SetPasswordPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ token: res.token, expiresAt: res.expiresAt }),
         });
-        localStorage.setItem('userRole', res.role);
+  const roleVal = res.role;
+  if (roleVal) localStorage.setItem('userRole', roleVal);
         localStorage.setItem('verifiedUserId', res.userId);
         const isNew = localStorage.getItem('newUser') === '1';
         try { localStorage.removeItem('passwordMode'); if (!isNew) localStorage.removeItem('newUser'); } catch {}

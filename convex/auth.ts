@@ -2,6 +2,7 @@ import { action, mutation, query } from './_generated/server';
 import { api } from './_generated/api';
 import { v } from 'convex/values';
 import bcrypt from 'bcryptjs';
+import { deriveUserRole } from '../lib/auth/redirect';
 
 // Helpers compatible with Convex runtime (no Node Buffer)
 const base64Encode = (str: string) => {
@@ -139,16 +140,12 @@ export const verifyOtp = action({
           },
         )) as any;
         const prof = profileResult?.profile;
-        const derivedRole = prof?.companyData
-          ? 'company'
-          : prof?.jobSeekerData
-            ? 'job-seeker'
-            : existingUser.role;
+        const derivedRole = deriveUserRole(prof, existingUser);
         return {
           userId: existingUser._id,
           exists: true,
-          role: derivedRole,
-        } as any;
+          ...(derivedRole ? { role: derivedRole } : {}),
+        } as const;
       }
       const result = (await ctx.runMutation(api.otp.consumeOtpAndUpsertUser, {
         otpId: rec._id,
@@ -171,16 +168,12 @@ export const verifyOtp = action({
           },
         )) as any;
         const prof = profileResult?.profile;
-        const derivedRole = prof?.companyData
-          ? 'company'
-          : prof?.jobSeekerData
-            ? 'job-seeker'
-            : existingUser.role;
+        const derivedRole = deriveUserRole(prof, existingUser);
         return {
           userId: existingUser._id,
           exists: true,
-          role: derivedRole,
-        } as any;
+          ...(derivedRole ? { role: derivedRole } : {}),
+        } as const;
       }
       return { exists: false };
     }
@@ -203,11 +196,7 @@ export const checkUserExists = action({
       userId: user._id,
     })) as any;
     const prof = profResult?.profile;
-    const derivedRole = prof?.companyData
-      ? 'company'
-      : prof?.jobSeekerData
-        ? 'job-seeker'
-        : user.role;
+    const derivedRole = deriveUserRole(prof, user) ?? undefined;
     return { exists: true, role: derivedRole };
   },
 });
@@ -250,7 +239,7 @@ export const verifyPassword = action({
   ): Promise<{
     token: string;
     expiresAt: number;
-    role: 'company' | 'job-seeker' | string;
+    role?: 'company' | 'job-seeker';
     userId: string;
   }> => {
     const normalized = phone.startsWith('+') ? phone : `+91${phone}`;
@@ -265,11 +254,7 @@ export const verifyPassword = action({
       userId: user._id,
     })) as any;
     const prof = profResult?.profile;
-    const derivedRole = prof?.companyData
-      ? 'company'
-      : prof?.jobSeekerData
-        ? 'job-seeker'
-        : user.role;
+    const derivedRole = deriveUserRole(prof, user);
     // create session
     const session = (await ctx.runMutation(api.auth.createSession, {
       userId: user._id,
@@ -277,7 +262,7 @@ export const verifyPassword = action({
     return {
       token: session.token,
       expiresAt: session.expiresAt,
-      role: derivedRole,
+      ...(derivedRole ? { role: derivedRole } : {}),
       userId: user._id,
     };
   },

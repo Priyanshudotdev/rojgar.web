@@ -12,18 +12,28 @@ const GenderEnum = v.union(
 export const createUser = mutation({
   args: { phone: v.string(), role: RoleEnum, email: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    const existingUser = await ctx.db
+    // Normalize phone
+    const normalized = args.phone.startsWith('+')
+      ? args.phone
+      : `+91${args.phone}`;
+    // Check for existing user by normalized phone
+    let existingUser = await ctx.db
       .query('users')
-      .withIndex('by_phone', (q) => q.eq('phone', args.phone))
+      .withIndex('by_phone', (q) => q.eq('phone', normalized))
       .unique();
-
+    // Also check by raw phone if not found
+    if (!existingUser && args.phone !== normalized) {
+      existingUser = await ctx.db
+        .query('users')
+        .withIndex('by_phone', (q) => q.eq('phone', args.phone))
+        .unique();
+    }
     if (existingUser) {
       return existingUser._id;
     }
-
     const now = Date.now();
     const userId = await ctx.db.insert('users', {
-      phone: args.phone,
+      phone: normalized,
       email: args.email,
       role: args.role,
       createdAt: now,

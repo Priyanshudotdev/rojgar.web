@@ -9,22 +9,34 @@ import { Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import Logo from '@/components/ui/logo';
 import TopNav from '@/components/ui/top-nav';
+import { useSessionAuthedRedirect } from '@/hooks/useSessionAuthedRedirect';
 
 export default function LoginPhonePage() {
   const [phone, setPhone] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const { authed, redirectTo, checking } = useSessionAuthedRedirect();
   const router = useRouter();
   const checkUserExists = useAction(api.auth.checkUserExists);
   const requestOtp = useAction(api.auth.requestOtp);
 
   useEffect(() => {
+    // Note: `loginNotice` is set from the Register flow when a phone number already has an account
+    // (see: app/auth/register/page.tsx). It informs users to login instead of registering again.
     const msg = localStorage.getItem('loginNotice');
     if (msg) {
       setError(msg);
       localStorage.removeItem('loginNotice');
     }
   }, []);
+
+  // Redirect if already authenticated
+  useEffect(() => {
+    if (checking) return;
+    if (authed && redirectTo) {
+      router.replace(redirectTo);
+    }
+  }, [authed, redirectTo, checking, router]);
 
   const validate = (value: string) => {
     const cleaned = value.replace(/\D/g, '');
@@ -38,26 +50,47 @@ export default function LoginPhonePage() {
   const submit = async () => {
     if (!phone || error) return;
     setLoading(true);
+    setError("");
     try {
+      console.log("Phone Number:- ", phone)
       const existsRes = await checkUserExists({ phone });
       if (!existsRes.exists) {
-        localStorage.setItem('registerNotice', 'No account found. Please register first.');
-        router.replace('/auth/register');
+        // New flow: send new users to onboarding instead of direct registration
+        try {
+          localStorage.removeItem('authFlow');
+          // Intentionally clear any partial phone capture here. The onboarding screen does not
+          // read `phoneNumber`; users will go through role selection first, then to auth/phone.
+          localStorage.removeItem('phoneNumber');
+          localStorage.setItem(
+            'onboardingNotice',
+            "We couldn't find an account for this mobile number. Let's get you set up — please complete onboarding first."
+          );
+        } catch {}
+        router.replace('/onboarding');
         return;
       }
+      // Redirect to password entry page
       localStorage.setItem('authFlow', 'login');
       localStorage.setItem('phoneNumber', phone);
-      const otpRes = await requestOtp({ phone, purpose: 'login' }) as any;
-      if (otpRes?.debugCode) {
-        try { localStorage.setItem('debugOtp', otpRes.debugCode); } catch {}
-      }
-      router.push('/auth/otp');
+      router.push('/auth/login/password');
     } catch (e: any) {
-      setError(e.message || 'Failed to continue');
+      if (e.message && e.message.includes('network')) {
+        setError('Network error. Please check your connection and try again.');
+      } else {
+        setError(e.message || 'Failed to continue. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
   };
+
+  if (checking) {
+    return (
+      <div className="h-screen flex items-center justify-center text-white">
+        <Loader2 className="w-5 h-5 animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen flex flex-col text-white">
@@ -84,9 +117,9 @@ export default function LoginPhonePage() {
         {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
         <Button disabled={!phone || !!error || loading} onClick={submit} className="w-full bg-white text-green-600 hover:bg-gray-100 font-semibold py-3 mb-4 flex items-center justify-center gap-2 disabled:opacity-70">
           {loading && <Loader2 className="w-5 h-5 animate-spin" />}
-          {loading ? 'Sending OTP…' : 'Continue'}
+          {loading ? 'Loading…' : 'Continue'}
         </Button>
-        <p className="text-sm text-center">New here? <button className="underline" onClick={() => router.push('/auth/register')}>Register</button></p>
+  <p className="text-sm text-center">New here? <button className="underline" onClick={() => { try { localStorage.setItem('authFlow', 'register'); localStorage.removeItem('phoneNumber'); } catch {} ; router.push('/auth/register'); }}>Register</button></p>
       </div>
       <div className="text-center px-6 pb-6 text-sm opacity-75">By continuing you agree to our Terms & Privacy.</div>
     </div>

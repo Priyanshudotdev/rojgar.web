@@ -1,12 +1,13 @@
 'use client';
 // Job Seeker Dashboard main entry point
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, Bell, Home, Grid3X3, FileText, User, Share2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import Logo from '@/components/ui/logo';
 import DashboardLayout from '@/components/DashboardLayout';
 import { DashboardHeaderSkeleton, JobCardSkeleton } from '@/components/ui/skeleton';
 import { useQuery } from 'convex/react';
@@ -32,24 +33,17 @@ type ActiveJob = {
 };
 
 export default function JobSeekerDashboard() {
-  const [userProfile, setUserProfile] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const router = useRouter();
   const { data: jobs } = useCachedConvexQuery(api.jobs.getActiveJobs, {}, { key: 'active-jobs', ttlMs: 2 * 60 * 1000 });
-  const { me } = useMe();
+  const { me, loading } = useMe();
 
+  // Unauthenticated minimal fallback (middleware should handle this; guard just in case)
   useEffect(() => {
-    // Prefer using MeProvider cache; fallback to localStorage for legacy support
-    if (me?.profile) setUserProfile(me.profile);
-    else {
-      const profile = localStorage.getItem('userProfile');
-      if (profile) setUserProfile(JSON.parse(profile));
+    if (!loading && !me) {
+      try { router.replace('/auth/login'); } catch {}
     }
-    // simulate a quick hydration tick; in future, plug Convex query and cache update here
-    const t = setTimeout(() => setLoading(false), 50);
-    return () => clearTimeout(t);
-  }, [me]);
+  }, [loading, me, router]);
 
   const filtered = useMemo(() => {
     const list = (jobs ?? []) as ActiveJob[];
@@ -62,6 +56,9 @@ export default function JobSeekerDashboard() {
         (j.company?.name?.toLowerCase().includes(q) ?? false),
     );
   }, [jobs, searchQuery]);
+
+  // Avoid rendering content during redirect when unauthenticated
+  if (!loading && !me) return null;
 
   return (
       <main className='h-screen'>
@@ -77,7 +74,7 @@ export default function JobSeekerDashboard() {
                 <AvatarFallback>SB</AvatarFallback>
               </Avatar>
               <div>
-                <h1 className="font-semibold text-black">{userProfile?.name || 'Selmon Bhai'}</h1>
+                <h1 className="font-semibold text-black">{me?.profile?.name || 'Job Seeker'}</h1>
                 <p className="text-sm text-gray-600">Mechanic ▼</p>
               </div>
             </div>
@@ -130,10 +127,10 @@ export default function JobSeekerDashboard() {
                   <div className="flex justify-between items-start mb-3">
                     <div className="flex items-center space-x-3">
                       <div className="w-10 h-10 bg-gray-200 rounded-lg flex items-center justify-center overflow-hidden">
-                        {job.company?.photoUrl ? (
-                          <img src={job.company.photoUrl} alt={job.company?.name || 'Employeer'} className="w-full h-full object-cover" />
+                          {job.company?.photoUrl ? (
+                            <AvatarImage src={job.company.photoUrl as string} />
                         ) : (
-                          <span className="text-xl">🏢</span>
+                            <Logo size={40} alt="Employeer Logo" className="rounded-full" />
                         )}
                       </div>
                       <div>

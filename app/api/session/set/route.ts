@@ -5,7 +5,7 @@ export async function POST(request: Request) {
   const res = NextResponse.json({ ok: true });
   res.cookies.set('sessionToken', token, {
     httpOnly: true,
-    secure: true,
+    secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',
     expires: new Date(expiresAt),

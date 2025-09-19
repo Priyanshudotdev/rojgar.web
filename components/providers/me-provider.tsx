@@ -1,6 +1,9 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { redirectGuard } from '@/hooks/useSessionAuthedRedirect';
+import { useQuery } from 'convex/react';
+import { api } from '@/convex/_generated/api';
 
 type Me = {
   user: any | null;
@@ -11,87 +14,72 @@ type MeContextValue = {
   me: Me | null;
   loading: boolean;
   refresh: () => Promise<void>;
+  redirecting: boolean;
 };
 
 const MeContext = createContext<MeContextValue | undefined>(undefined);
-
-const LS_KEY = 'me-cache:v1';
-const TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 type MeProviderProps = {
   children: React.ReactNode;
   /** Optional server-fetched initial value to avoid duplicate client round trip */
   initial?: Me | null;
-  /** If true, skip the automatic fetch on mount (used when initial is authoritative) */
+  /** If true, use initial data as authoritative on first paint; queries will hydrate subsequently */
   skipInitialFetch?: boolean;
 };
 
 export function MeProvider({ children, initial = null, skipInitialFetch }: MeProviderProps) {
-  const [me, setMe] = useState<Me | null>(initial);
-  const [loading, setLoading] = useState(!initial);
-  const fetchingRef = useRef(false);
+  const [phone, setPhone] = useState<string | null>(null);
+  const [redirecting, setRedirecting] = useState<boolean>(redirectGuard.isInProgress());
 
-  const hydrate = () => {
-    try {
-      const raw = localStorage.getItem(LS_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as { t: number; v: Me };
-      if (Date.now() - parsed.t < TTL_MS) {
-        setMe(parsed.v);
-      } else {
-        localStorage.removeItem(LS_KEY);
-      }
-    } catch {}
-  };
-
-  const fetchMe = async () => {
-    if (fetchingRef.current) {
-      // allow subsequent calls to re-fetch after a short delay
-      // avoids lock if localStorage was cleared mid-flight
-      return;
-    }
-    fetchingRef.current = true;
-    try {
-      const res = await fetch('/api/me', { cache: 'no-store' });
-      if (res.ok) {
-        const data = (await res.json()) as Me;
-        setMe(data);
-        try {
-          localStorage.setItem(LS_KEY, JSON.stringify({ t: Date.now(), v: data }));
-        } catch {}
-      }
-    } catch {
-      // ignore
-    } finally {
-      fetchingRef.current = false;
-      setLoading(false);
-    }
-  };
-
+  // Read phone number from localStorage (set during login/register)
   useEffect(() => {
-    // If we already have initial data (SSR-provided), seed localStorage immediately
-    if (initial) {
-      try {
-        localStorage.setItem(LS_KEY, JSON.stringify({ t: Date.now(), v: initial }));
-      } catch {}
-    } else {
-      hydrate();
+    try {
+      const p = localStorage.getItem('phoneNumber');
+      setPhone(p || null);
+    } catch {
+      setPhone(null);
     }
-    if (skipInitialFetch) {
-      // We trust the provided initial value; still allow manual refresh later
-      setLoading(false);
-      return;
-    }
-    // brief tick to avoid blocking paint, then fetch fresh data (may revalidate)
-    const t = setTimeout(() => fetchMe(), 0);
-    return () => clearTimeout(t);
-  // we intentionally exclude fetchMe from deps to avoid ref churn
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [skipInitialFetch, initial]);
+  }, []);
+
+  // Convex reactive queries
+  const user = useQuery(api.users.getUserByPhone, phone ? { phone } : 'skip');
+  const profileData = useQuery(
+    api.profiles.getProfileByUserId,
+    user && user._id ? { userId: user._id } : 'skip'
+  ) as { user: any; profile: any } | null | undefined;
+
+  // Build me from queries
+  const meFromQueries: Me | null | undefined = useMemo(() => {
+    if (phone == null) return null; // no phone -> unauthenticated
+    if (user === undefined) return undefined; // user loading
+    if (user === null) return { user: null, profile: null };
+    if (profileData === undefined) return undefined; // profile loading
+    const profile = profileData?.profile ?? null;
+    return { user, profile };
+  }, [phone, user, profileData]);
+
+  // Determine loading state: undefined from useQuery indicates loading
+  const loading = useMemo(() => {
+    if (skipInitialFetch && initial) return false;
+    if (phone == null) return false; // no phone to look up
+    return meFromQueries === undefined;
+  }, [meFromQueries, phone, skipInitialFetch, initial]);
+
+  // Prefer live queries, fall back to initial on first render
+  const me: Me | null = (meFromQueries ?? initial ?? null) as Me | null;
+
+  // Reflect redirect guard state reactively
+  useEffect(() => {
+    const interval = setInterval(() => setRedirecting(redirectGuard.isInProgress()), 200);
+    return () => clearInterval(interval);
+  }, []);
+
+  // No-op refresh; Convex queries are reactive. Kept for API compatibility.
+  const refresh = async () => { return; };
 
   const value = useMemo<MeContextValue>(
-    () => ({ me, loading, refresh: fetchMe }),
-    [me, loading]
+    () => ({ me, loading, refresh, redirecting }),
+    [me, loading, redirecting]
   );
 
   return <MeContext.Provider value={value}>{children}</MeContext.Provider>;

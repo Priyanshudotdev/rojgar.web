@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { ArrowLeft, Share2, MapPin, DollarSign, Clock, Users } from 'lucide-react';
+import Logo from '@/components/ui/logo';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { useQuery } from 'convex/react';
@@ -51,7 +52,7 @@ export default function JobDetailPage() {
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={data.company.photoUrl} alt={data.company?.name || 'Employeer'} className="w-full h-full object-cover" />
                 ) : (
-                  <span className="text-gray-600 text-xl">🏢</span>
+                  <Logo size={48} alt="Employeer Logo" className="rounded-lg" />
                 )}
               </div>
               <div className="flex-1">

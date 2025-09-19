@@ -2,6 +2,10 @@ import { cookies } from "next/headers";
 import { api } from "@/convex/_generated/api";
 import { fetchQuery } from "convex/nextjs";
 import { redirect } from "next/navigation";
+import { MeProvider } from "@/components/providers/me-provider";
+import DashboardShell from "@/app/dashboard/layout";
+import JobSeekerDashboard from "@/app/dashboard/job-seeker/page";
+import CompanyDashboardPage from "@/app/dashboard/company/page";
 
 export default async function ProfilePage() {
   const cookieStore = await cookies();
@@ -11,33 +15,24 @@ export default async function ProfilePage() {
   const user = await fetchQuery(api.auth.getUserBySession, { token });
   if (!user) redirect("/auth/phone");
 
-  // Fetch profile for richer UI and redirect to dashboard
+  // Fetch profile for richer UI and render dashboard directly with initial MeProvider data
   const profileData = await fetchQuery(api.profiles.getProfileByUserId, { userId: user._id });
   const role = user.role;
-  if (role === "job-seeker") {
-    redirect("/dashboard/job-seeker");
-  } else if (role === "company") {
-    redirect("/dashboard/company");
-  }
+  const meInitial = { user, profile: profileData } as any;
 
   return (
-    <div className="max-w-md mx-auto p-4">
-      <h1 className="text-xl font-semibold mb-4">Your Profile</h1>
-      <div className="space-y-2 text-black">
-        <div>
-          <span className="font-medium">Phone: </span>
-          <span>{user.phone}</span>
-        </div>
-        <div>
-          <span className="font-medium">Role: </span>
-          <span>{role}</span>
-        </div>
-        <div>
-          <span className="font-medium">Verified: </span>
-          <span>{String(user.phoneVerified)}</span>
-        </div>
-        <pre className="text-xs bg-gray-100 p-2 rounded mt-4">{JSON.stringify(profileData, null, 2)}</pre>
-      </div>
-    </div>
+    <MeProvider initial={meInitial} skipInitialFetch={true}>
+      <DashboardShell>
+        {role === "job-seeker" ? (
+          <JobSeekerDashboard />
+        ) : role === "company" ? (
+          <CompanyDashboardPage />
+        ) : (
+          <div className="min-h-screen grid place-items-center text-black">
+            Unknown role. Please <a href="/auth/login" className="underline ml-1">log in</a> again.
+          </div>
+        )}
+      </DashboardShell>
+    </MeProvider>
   );
 }

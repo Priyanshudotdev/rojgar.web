@@ -16,5 +16,24 @@ export async function GET() {
   const profileData = await fetchQuery(api.profiles.getProfileByUserId, {
     userId: user._id,
   });
-  return NextResponse.json(profileData);
+  // Sanitize user: return only non-sensitive fields
+  const createdAtRaw: any =
+    (user as any).createdAt ?? (user as any)._creationTime ?? null;
+  const safeUser = {
+    _id: user._id,
+    phone: (user as any).phone ?? null,
+    email: (user as any).email ?? null,
+    role: (user as any).role ?? null,
+    phoneVerified: (user as any).phoneVerified ?? false,
+    createdAt:
+      typeof createdAtRaw === 'number'
+        ? new Date(createdAtRaw).toISOString()
+        : createdAtRaw,
+  };
+
+  // Ensure top-level shape is always an object with user and profile keys
+  return NextResponse.json({
+    user: safeUser,
+    profile: (profileData as any)?.profile ?? null,
+  });
 }

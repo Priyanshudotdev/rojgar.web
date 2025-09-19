@@ -2,7 +2,7 @@
 
 import { useEffect, useState, ChangeEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import TopNav from '@/components/ui/top-nav';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -59,7 +59,7 @@ type Errors = Partial<
 >;
 
 export default function CompanyOnboardingPage() {
-  const [currentStep, setCurrentStep] = useState<number>(0);
+  "use client";
   const [formData, setFormData] = useState<FormData>({
     title: '',
     location: { city: '', locality: '' },
@@ -78,18 +78,19 @@ export default function CompanyOnboardingPage() {
     companyPhotoUrl: '',
     agreeToTerms: false,
   });
+  const [currentStep, setCurrentStep] = useState(0);
   const [errors, setErrors] = useState<Errors>({});
   const router = useRouter();
   const upsertCompanyProfile = useMutation(api.users.upsertCompanyProfile);
-  const createJob = useMutation(api.jobs.createJob);
   const setCompanyPhoto = useMutation(api.profiles.setCompanyPhoto);
 
   // Get current user/profile via API (cookie-based) once on mount
   const [currentUserId, setCurrentUserId] = useState<Id<'users'> | null>(null);
   const [companyProfileId, setCompanyProfileId] = useState<Id<'profiles'> | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [loadingSession, setLoadingSession] = useState(true);
+  const [sessionError, setSessionError] = useState<string | null>(null);
 
-  // Fetch on client init
   useEffect(() => {
     (async () => {
       try {
@@ -98,10 +99,18 @@ export default function CompanyOnboardingPage() {
           const data = await res.json();
           if (data?.user?._id) setCurrentUserId(data.user._id as Id<'users'>);
           if (data?.profile?._id) setCompanyProfileId(data.profile._id as Id<'profiles'>);
+          setLoadingSession(false);
+        } else {
+          setSessionError('Session expired. Please login again.');
+          setLoadingSession(false);
         }
-      } catch {}
+      } catch {
+        setSessionError('Failed to validate session. Please try again.');
+        setLoadingSession(false);
+      }
     })();
   }, []);
+  // removed unused isProfileComplete helper
 
   // Helper for nested fields
   const handleChange = (field: keyof FormData | string) => (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -180,10 +189,9 @@ export default function CompanyOnboardingPage() {
       if (currentStep < steps.length - 1) {
         setCurrentStep(prev => prev + 1);
       } else {
-        // Final submit: persist to Convex
+        // Final submit: upsert profile only, then redirect
         try {
           setSubmitting(true);
-          // 1) Upsert company profile (requires userId)
           if (!currentUserId) throw new Error('Not authenticated');
           const profileId = await upsertCompanyProfile({
             userId: currentUserId,
@@ -198,29 +206,9 @@ export default function CompanyOnboardingPage() {
               companyPhotoUrl: formData.companyPhotoUrl || '',
             },
           });
-
-          const companyId = (companyProfileId ?? profileId) as Id<'profiles'>;
-
-          // 2) Create first job
-          await createJob({
-            companyId,
-            title: formData.title,
-            location: { city: formData.location.city, locality: formData.location.locality || undefined },
-            salary: {
-              min: Number(formData.salary.min) || 0,
-              max: Number(formData.salary.max) || 0,
-            },
-            jobType: formData.jobType as any,
-            staffNeeded: Number(formData.staffNeeded) || 1,
-            genderRequirement: formData.genderRequirement as any,
-            educationRequirements: formData.educationRequirements,
-            experienceRequired: formData.experienceRequired,
-            description: formData.description,
-            status: 'Active',
-          });
-
-          // Cache locally for instant dashboard
-          localStorage.setItem('companyProfile', JSON.stringify(formData));
+          // ensure we remember profile id for image updates later
+          if (profileId) setCompanyProfileId(profileId as Id<'profiles'>);
+          try { localStorage.setItem('companyProfile', JSON.stringify(formData)); } catch {}
           router.push('/dashboard/company');
         } catch (e: any) {
           alert(e.message || 'Failed to submit');
@@ -494,6 +482,22 @@ export default function CompanyOnboardingPage() {
     }
   };
 
+  if (loadingSession) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="animate-spin w-8 h-8 text-green-600" />
+        <span className="ml-3 text-lg text-gray-700">Validating session…</span>
+      </div>
+    );
+  }
+  if (sessionError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <span className="text-lg text-red-600">{sessionError}</span>
+        <Button className="ml-4 bg-green-600 text-white" onClick={() => window.location.href = '/auth/login'}>Login</Button>
+      </div>
+    );
+  }
   return (
     <div className="h-screen bg-white text-black">
       <TopNav title="Enter details" onBack={handleBack} />

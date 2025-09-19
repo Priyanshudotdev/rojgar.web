@@ -1,11 +1,30 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Loader2 } from "lucide-react";
 import Logo from "@/components/ui/logo";
 import { Button } from "@/components/ui/button";
+import { useSessionAuthedRedirect } from "@/hooks/useSessionAuthedRedirect";
 
 export default function AuthLanding() {
   const router = useRouter();
+  const { authed, redirectTo, checking } = useSessionAuthedRedirect();
+  useEffect(() => {
+    if (checking) return;
+    if (authed && redirectTo) {
+      router.replace(redirectTo);
+    }
+  }, [authed, redirectTo, checking, router]);
+
+  if (checking) {
+    return (
+      <div className="h-screen flex items-center justify-center text-white">
+        <Loader2 className="w-6 h-6 animate-spin" />
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen flex flex-col text-white">
       <div className="px-6 pt-10 flex items-center gap-x-2 mb-12">
@@ -23,7 +42,7 @@ export default function AuthLanding() {
                 localStorage.setItem('authFlow', 'login');
                 localStorage.removeItem('userRole');
               } catch {}
-              router.push('/auth/phone');
+              router.push('/auth/login');
             }}
           >
             Login with Mobile

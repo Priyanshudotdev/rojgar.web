@@ -3,7 +3,7 @@
 import Logo from '@/components/ui/logo';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 const onboardingScreens = [
   {
@@ -23,6 +23,20 @@ const onboardingScreens = [
 export default function OnboardingScreen() {
   const router = useRouter();
   const [currentScreen, setCurrentScreen] = useState(0);
+  const [notice, setNotice] = useState<string>('');
+
+  // If redirected from login, show onboarding notice once. This is set in app/auth/login/page.tsx
+  // when a user attempts to log in with a non-existent account. Note: The onboarding flow does
+  // not use or require `localStorage.phoneNumber`; users will go to role-selection → auth steps.
+  useEffect(() => {
+    try {
+      const msg = localStorage.getItem('onboardingNotice');
+      if (msg) {
+        setNotice(msg);
+        localStorage.removeItem('onboardingNotice');
+      }
+    } catch {}
+  }, []);
 
   const nextScreen = () => {
     if (currentScreen < onboardingScreens.length - 1) {
@@ -47,7 +61,12 @@ export default function OnboardingScreen() {
         <h1 className="text-3xl font-bold">Rojgar</h1>
       </div>
 
-      <div className="flex-1 flex items-center justify-center">
+      <div className="flex-1 flex flex-col items-center justify-center">
+        {notice && (
+          <div className="max-w-xs w-full mb-4 text-sm text-yellow-100 bg-yellow-700/50 border border-yellow-400 rounded p-3 text-center">
+            {notice}
+          </div>
+        )}
         <div className="text-center max-w-xs">
         <h2 className="text-4xl font-normal mb-6 leading-tight whitespace-pre-line tracking-wide">
           {onboardingScreens[currentScreen].title}

@@ -41,15 +41,20 @@ export default function ProfilePage() {
       <div className="p-4">
         <Card className="p-6 text-center">
           <Avatar className="w-24 h-24 mx-auto mb-4">
-            <AvatarImage src="https://images.pexels.com/photos/2379004/pexels-photo-2379004.jpeg" />
-            <AvatarFallback>SB</AvatarFallback>
+            {userProfile?.image && (
+              <AvatarImage src={userProfile.image} />
+            )}
+            <AvatarFallback>
+              {userProfile?.name
+                ? userProfile.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2)
+                : 'SB'}
+            </AvatarFallback>
           </Avatar>
-          
           <div className="flex items-center justify-center space-x-2 mb-2">
-            <h2 className="text-xl font-semibold">Selmon Bhai</h2>
+            <h2 className="text-xl font-semibold">{userProfile?.name || 'Selmon Bhai'}</h2>
             <Edit2 className="w-4 h-4 text-gray-400" />
           </div>
-          <p className="text-gray-600 mb-4">India</p>
+          <p className="text-gray-600 mb-4">{userProfile?.location || 'India'}</p>
 
           {/* Stats */}
           <div className="flex justify-around mb-6">

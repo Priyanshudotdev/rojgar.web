@@ -1,6 +1,9 @@
+
 "use client";
 
-import { useState, useEffect, useMemo } from 'react';
+import Logo from '@/components/ui/logo';
+
+import { useState, useMemo, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Search, PlusCircle, Briefcase, Users, MoreVertical, BarChart3, Pencil, Loader2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -30,13 +33,19 @@ type JobWithStats = {
 };
 
 export default function CompanyDashboardPage() {
-  const [searchQuery, setSearchQuery] = useState('');
   const router = useRouter();
+  const [searchQuery, setSearchQuery] = useState('');
   // Get current user/profile via shared provider (cached)
-  const { me, loading: meLoading } = useMe();
+  const { me, loading: meLoading, refresh } = useMe();
   const companyId = (me?.profile?._id ?? null) as Id<'profiles'> | null;
+  // Enhanced profile completion validation
+  const isProfileComplete = (profile: any) => {
+    if (!profile) return false;
+    const data = profile.companyData || {};
+    return !!(data.companyName && data.contactPerson && data.companyAddress);
+  };
 
-  const { data: jobs, isLoading } = useCachedConvexQuery(
+  const { data: jobs } = useCachedConvexQuery(
     api.jobs.getJobsWithStatsByCompany,
     companyId ? ({ companyId } as any) : ("skip" as any),
     { key: 'jobsByCompany', ttlMs: 2 * 60 * 1000 }
@@ -115,6 +124,13 @@ export default function CompanyDashboardPage() {
     }
   }, [editing, me?.profile]);
 
+  // Unauthenticated minimal fallback (middleware should handle this; guard just in case)
+  useEffect(() => {
+    if (!meLoading && !me) {
+      try { router.replace('/auth/login'); } catch {}
+    }
+  }, [meLoading, me, router]);
+
   const handleSaveProfile = async () => {
     if (!me?.user?._id) return;
     setSavingProfile(true);
@@ -132,9 +148,9 @@ export default function CompanyDashboardPage() {
           companyPhotoUrl: editValues.companyPhotoUrl || '',
         },
       });
-      // Attempt to refresh any server components / data caches
+      // Refresh MeProvider state to reflect latest profile
       try { router.refresh(); } catch {}
-      invalidateKeys(['me']);
+      try { await refresh(); } catch {}
       setEditing(false);
     } catch (e: any) {
       alert(e.message || 'Failed to save');
@@ -171,7 +187,7 @@ export default function CompanyDashboardPage() {
                 if (url) {
                   setEditValues((p) => ({ ...p, companyPhotoUrl: url }));
                   if (me?.profile?._id) {
-                    try { await setCompanyPhoto({ profileId: me.profile._id as any, url }); invalidateKeys(['me']); } catch {}
+                    try { await setCompanyPhoto({ profileId: me.profile._id as any, url }); try { await refresh(); } catch {} } catch {}
                   }
                 }
               }}
@@ -212,20 +228,29 @@ export default function CompanyDashboardPage() {
     </div>
   ) : null;
 
+  // Avoid rendering content that accesses `me` when unauthenticated while redirecting
+  if (!meLoading && !me) {
+    return null;
+  }
+
   return (
     <div className="bg-white">
       {/* Header */}
-      {meLoading || !me?.profile ? (
+      {meLoading ? (
         <DashboardHeaderSkeleton />
       ) : (
         <CompanyTopBar
           left={
             <div className="flex items-center space-x-3">
               <Avatar className="w-10 h-10">
-                <AvatarImage src={(me.profile.companyData?.companyPhotoUrl || '/logo.png') as string} />
+                {me?.profile?.companyData?.companyPhotoUrl ? (
+                  <AvatarImage src={me?.profile?.companyData?.companyPhotoUrl as string} />
+                ) : (
+                  <Logo size={40} alt="Employeer Logo" className="rounded-full" />
+                )}
                 <AvatarFallback>
                   {(() => {
-                    const name = (me.profile.companyData?.companyName || me.profile.name || '') as string;
+                    const name = (me?.profile?.companyData?.companyName || me?.profile?.name || '') as string;
                     const initials = name
                       .split(' ')
                       .filter(Boolean)
@@ -238,7 +263,7 @@ export default function CompanyDashboardPage() {
               </Avatar>
               <div>
                 <h1 className="font-semibold text-black text-lg flex items-center gap-2">
-                  {(me.profile.companyData?.companyName || me.profile.name) as string}
+                  {(me?.profile?.companyData?.companyName || me?.profile?.name) as string}
                   <button
                     type="button"
                     onClick={() => setEditing(true)}
@@ -249,8 +274,8 @@ export default function CompanyDashboardPage() {
                   </button>
                 </h1>
                 {/* Remove dummy city; show contact person if available */}
-                {me.profile.companyData?.contactPerson && (
-                  <p className="text-sm text-gray-600">Contact: {me.profile.companyData.contactPerson}</p>
+                {me?.profile?.companyData?.contactPerson && (
+                  <p className="text-sm text-gray-600">Contact: {me?.profile?.companyData?.contactPerson}</p>
                 )}
               </div>
             </div>
@@ -323,22 +348,45 @@ export default function CompanyDashboardPage() {
       <main className="flex-1 px-4 pb-24 pt-2 overflow-y-auto bg-white">
         <h2 className="text-lg font-semibold text-black mb-4">Your Job Postings</h2>
         <div className="space-y-4">
-          {(meLoading && !jobs) || (!jobs && !companyId)
-            ? Array.from({ length: 3 }).map((_, i) => <JobCardSkeleton key={i} />)
-            : jobs && jobs.length === 0 && searchQuery.trim() === ''
-            ? (
-                <Card className="p-6 bg-white rounded-xl border border-dashed border-gray-300 text-center">
-                  <div className="flex flex-col items-center gap-3">
-                    <Briefcase className="w-8 h-8 text-gray-400" />
-                    <h3 className="font-semibold text-black">You have no jobs posted!!!</h3>
-                    <p className="text-sm text-gray-600">Post your first job to start receiving applicants.</p>
-                    <Button className="bg-green-600 hover:bg-green-700" onClick={() => router.push('/onboarding/company')}>
-                      <PlusCircle className="w-4 h-4 mr-2" /> Post a Job
-                    </Button>
-                  </div>
-                </Card>
-              )
-             : filteredJobs.map((job: JobWithStats) => (
+          {meLoading ? (
+            Array.from({ length: 3 }).map((_, i) => <JobCardSkeleton key={i} />)
+          ) : !companyId ? (
+            <Card className="p-6 bg-white rounded-xl border border-dashed border-gray-300 text-center">
+              <div className="flex flex-col items-center gap-3">
+                <Briefcase className="w-8 h-8 text-gray-400" />
+                <h3 className="font-semibold text-black">Complete your Employeer profile first!</h3>
+                <p className="text-sm text-gray-600">Fill in your company details to post jobs.</p>
+                <Button className="bg-green-600 hover:bg-green-700" onClick={() => router.push('/onboarding/company')}>
+                  <PlusCircle className="w-4 h-4 mr-2" /> Complete Profile
+                </Button>
+              </div>
+            </Card>
+          ) : jobs && jobs.length === 0 && searchQuery.trim() === '' ? (
+            !isProfileComplete(me?.profile) ? (
+              <Card className="p-6 bg-white rounded-xl border border-dashed border-gray-300 text-center">
+                <div className="flex flex-col items-center gap-3">
+                  <Briefcase className="w-8 h-8 text-gray-400" />
+                  <h3 className="font-semibold text-black">Complete your Employeer profile first!</h3>
+                  <p className="text-sm text-gray-600">Fill in your company details to post jobs.</p>
+                  <Button className="bg-green-600 hover:bg-green-700" onClick={() => router.push('/onboarding/company')}>
+                    <PlusCircle className="w-4 h-4 mr-2" /> Complete Profile
+                  </Button>
+                </div>
+              </Card>
+            ) : (
+              <Card className="p-6 bg-white rounded-xl border border-dashed border-gray-300 text-center">
+                <div className="flex flex-col items-center gap-3">
+                  <Briefcase className="w-8 h-8 text-gray-400" />
+                  <h3 className="font-semibold text-black">You have no jobs posted!!!</h3>
+                  <p className="text-sm text-gray-600">Post your first job to start receiving applicants.</p>
+                  <Button className="bg-green-600 hover:bg-green-700" onClick={() => router.push('/dashboard/company/jobs/new')}>
+                    <PlusCircle className="w-4 h-4 mr-2" /> Post a Job
+                  </Button>
+                </div>
+              </Card>
+            )
+          ) : (
+            filteredJobs.map((job: JobWithStats) => (
                 <Card key={job._id} onClick={() => router.push(`/dashboard/company/jobs/${job._id}`)} className="p-4 cursor-pointer bg-white rounded-xl border border-gray-100">
                   <div className="flex justify-between items-start mb-3">
                     <div className="flex items-center space-x-3">
@@ -368,7 +416,8 @@ export default function CompanyDashboardPage() {
                     <span className={`text-xs font-semibold px-2 py-1 rounded-full ${job.status === 'Active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{job.status}</span>
                   </div>
                 </Card>
-              ))}
+              )))
+          }
           {!meLoading && jobs && jobs.length > 0 && filteredJobs.length === 0 && (
             <p className="text-sm text-gray-600">No jobs found.</p>
           )}

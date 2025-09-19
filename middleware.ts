@@ -1,7 +1,7 @@
 import { NextResponse, NextRequest } from 'next/server';
 
 // Paths that should be hidden from logged-in users
-const AUTH_GUARD_PATHS = ['/splash', '/auth', '/role-selection'];
+const AUTH_GUARD_PATHS = ['/splash', '/auth', '/role-selection', '/onboarding'];
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
