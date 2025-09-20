@@ -9,6 +9,8 @@ import Logo from '@/components/ui/logo';
 import { useAction, useMutation } from 'convex/react';
 import { api } from '@/convex/_generated/api';
 import TopNav from '@/components/ui/top-nav';
+import { getDashboardPathByRole } from '@/lib/auth/clientRedirect';
+import { toast } from '@/hooks/use-toast';
 
 export default function OTPVerification() {
   const [otp, setOTP] = useState('');
@@ -43,7 +45,8 @@ export default function OTPVerification() {
   }, [cooldown]);
 
   const handleResend = async () => {
-    if (!phoneNumber || resending || cooldown > 0) return;
+    if (!phoneNumber) { setError('Please re-enter your mobile number.'); return; }
+    if (resending || cooldown > 0) return;
     setError('');
     setResending(true);
     try {
@@ -61,54 +64,30 @@ export default function OTPVerification() {
 
   const handleVerify = async () => {
     if (otp.length !== 6 || verifying) return;
+    if (!phoneNumber) {
+      setError('Session expired. Please start again.');
+      return;
+    }
     try {
       setError('');
       setVerifying(true);
-      const flow = (localStorage.getItem('authFlow') || 'login') as 'login' | 'register';
-      const selectedRole = localStorage.getItem('userRole') as 'job-seeker' | 'company' | null;
-      const result = await verifyOtp({ phone: phoneNumber, code: otp, role: flow === 'register' ? selectedRole ?? undefined : undefined });
-      // Registration path
-      if (flow === 'register') {
-        if (!result.userId) {
-          // Should not happen, but guard anyway
-          setError('Could not proceed with registration');
-          return;
-        }
+
+      const onboardingData = JSON.parse(localStorage.getItem('onboardingData') || 'null');
+      const roleFromStorage = localStorage.getItem('userRole') as 'job-seeker' | 'company' | null;
+      const role = roleFromStorage ?? undefined;
+
+      const result = await verifyOtp({ phone: phoneNumber, code: otp, role, onboardingData });
+
+      if (result.userId) {
         localStorage.setItem('verifiedUserId', result.userId as unknown as string);
         if (result.newlyCreated) {
           try { localStorage.setItem('newUser', '1'); } catch {}
         }
         try { localStorage.removeItem('debugOtp'); } catch {}
-        router.push('/auth/password');
-        return;
-      }
-
-      // Login path: if user exists -> create session; else -> go to register
-      if (result.exists && result.userId) {
-        localStorage.setItem('verifiedUserId', result.userId as unknown as string);
-        const session = await createSession({ userId: result.userId as any });
-        await fetch('/api/session/set', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: session.token, expiresAt: session.expiresAt }),
-        });
-        // Direct role-based redirect to avoid landing on the wrong dashboard
-        const role = result.role;
-        try { localStorage.removeItem('debugOtp'); } catch {}
-        if (role === 'company') {
-          router.replace('/dashboard/company');
-        } else if (role === 'job-seeker') {
-          router.replace('/dashboard/job-seeker');
-        } else {
-          // Fallback to /profile if role could not be inferred
-          router.replace('/profile');
-        }
+        try { localStorage.setItem('passwordMode', 'set'); } catch {}
+        router.replace(`/auth/register/password?isNew=${result.newlyCreated ? 'true' : 'false'}`);
       } else {
-        // Not registered: inform and go to register flow
-        localStorage.setItem('authFlow', 'register');
-        localStorage.setItem('registerNotice', 'Account not found for this mobile number. Please register to continue.');
-        setError('Account not found. Redirecting to register…');
-        setTimeout(() => router.replace('/auth/register'), 1200);
+        setError('Failed to verify OTP. Please try again.');
       }
     } catch (e: any) {
       setError(e.message || 'Invalid or expired OTP');

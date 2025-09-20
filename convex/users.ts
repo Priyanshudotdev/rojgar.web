@@ -55,6 +55,7 @@ export const upsertJobSeekerProfile = mutation({
       experience: v.string(),
       location: v.string(),
       skills: v.array(v.string()),
+      profilePhotoUrl: v.optional(v.string()),
     }),
   },
   handler: async (ctx, args) => {

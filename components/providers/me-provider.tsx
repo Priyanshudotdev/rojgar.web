@@ -2,8 +2,6 @@
 
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { redirectGuard } from '@/hooks/useSessionAuthedRedirect';
-import { useQuery } from 'convex/react';
-import { api } from '@/convex/_generated/api';
 
 type Me = {
   user: any | null;
@@ -15,6 +13,7 @@ type MeContextValue = {
   loading: boolean;
   refresh: () => Promise<void>;
   redirecting: boolean;
+  error?: string | null;
 };
 
 const MeContext = createContext<MeContextValue | undefined>(undefined);
@@ -28,62 +27,146 @@ type MeProviderProps = {
 };
 
 export function MeProvider({ children, initial = null, skipInitialFetch }: MeProviderProps) {
-  const [phone, setPhone] = useState<string | null>(null);
+  const [meFromApi, setMeFromApi] = useState<Me | null | undefined>(undefined); // undefined = loading
+  const [hydrated, setHydrated] = useState(false);
   const [redirecting, setRedirecting] = useState<boolean>(redirectGuard.isInProgress());
+  const [error, setError] = useState<string | null>(null);
 
-  // Read phone number from localStorage (set during login/register)
-  useEffect(() => {
+  const sessionSettledRef = useRef(false);
+  const intervalRef = useRef<number | null>(null);
+  const timeoutRef = useRef<number | null>(null);
+  const controllerRef = useRef<AbortController | null>(null);
+
+  // Helper: call /api/me to detect session & user/profile server-side
+  const checkSessionStatus = async () => {
     try {
-      const p = localStorage.getItem('phoneNumber');
-      setPhone(p || null);
-    } catch {
-      setPhone(null);
+      // Abort previous in-flight request
+      if (controllerRef.current) {
+        try { controllerRef.current.abort(); } catch {}
+      }
+      const controller = new AbortController();
+      controllerRef.current = controller;
+      const res = await fetch('/api/me', { method: 'GET', credentials: 'same-origin', signal: controller.signal });
+      if (res.status === 401) {
+        // No session
+        setMeFromApi(null);
+        setError(null);
+        sessionSettledRef.current = true;
+        // clear timers/interval handled elsewhere
+        return null;
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => 'Unknown error');
+        throw new Error(text || 'Failed to fetch session');
+      }
+      const json = await res.json();
+      // Expect shape { user, profile }
+      setMeFromApi({ user: json.user ?? null, profile: json.profile ?? null });
+      setError(null);
+      sessionSettledRef.current = true;
+      return json;
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return undefined;
+      // Network or other error - do not treat as logout; preserve undefined so timeout can decide
+      setError(e?.message ?? 'Network error');
+      return undefined;
     }
+  };
+
+  // Polling + event-driven detection
+  useEffect(() => {
+    let mounted = true;
+    setHydrated(true);
+
+    // Immediate check on mount
+    checkSessionStatus();
+
+    // Fallback polling: 250ms
+    intervalRef.current = window.setInterval(() => {
+      checkSessionStatus();
+    }, 250);
+
+    // Listener for immediate updates (e.g., onboarding pages dispatch this)
+    const onSessionUpdated = () => {
+      checkSessionStatus();
+    };
+    window.addEventListener('session-updated', onSessionUpdated as EventListener);
+
+    // Initial timeout to avoid infinite loading (5s)
+    timeoutRef.current = window.setTimeout(() => {
+      if (mounted && !sessionSettledRef.current && meFromApi === undefined) {
+        // mark as no session found or timed out
+        setMeFromApi(null);
+        setError((prev) => prev ?? 'Session detection timed out');
+        sessionSettledRef.current = true;
+      }
+    }, 5000);
+
+    return () => {
+      mounted = false;
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      if (controllerRef.current) {
+        try { controllerRef.current.abort(); } catch {}
+        controllerRef.current = null;
+      }
+      window.removeEventListener('session-updated', onSessionUpdated as EventListener);
+    };
   }, []);
 
-  // Convex reactive queries
-  const user = useQuery(api.users.getUserByPhone, phone ? { phone } : 'skip');
-  const profileData = useQuery(
-    api.profiles.getProfileByUserId,
-    user && user._id ? { userId: user._id } : 'skip'
-  ) as { user: any; profile: any } | null | undefined;
+  // Stop polling once we have a settled session state
+  useEffect(() => {
+    if (meFromApi !== undefined) {
+      sessionSettledRef.current = true;
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      if (controllerRef.current) {
+        try { controllerRef.current.abort(); } catch {}
+        controllerRef.current = null;
+      }
+    }
+  }, [meFromApi]);
 
-  // Build me from queries
-  const meFromQueries: Me | null | undefined = useMemo(() => {
-    if (phone == null) return null; // no phone -> unauthenticated
-    if (user === undefined) return undefined; // user loading
-    if (user === null) return { user: null, profile: null };
-    if (profileData === undefined) return undefined; // profile loading
-    const profile = profileData?.profile ?? null;
-    return { user, profile };
-  }, [phone, user, profileData]);
+  // Build me directly from /api/me result
+  const meFromQueries: Me | null | undefined = meFromApi;
 
-  // Determine loading state: undefined from useQuery indicates loading
+  // Determine loading state
   const loading = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    if (!hydrated) return true; // initial hydration
     if (skipInitialFetch && initial) return false;
-    if (phone == null) return false; // no phone to look up
+    // If /api/me is still fetching, show loading
     return meFromQueries === undefined;
-  }, [meFromQueries, phone, skipInitialFetch, initial]);
+  }, [hydrated, meFromQueries, skipInitialFetch, initial]);
 
-  // Prefer live queries, fall back to initial on first render
+  // Prefer API result, fall back to initial prop if provided
   const me: Me | null = (meFromQueries ?? initial ?? null) as Me | null;
 
-  // Reflect redirect guard state reactively
-  useEffect(() => {
-    const interval = setInterval(() => setRedirecting(redirectGuard.isInProgress()), 200);
-    return () => clearInterval(interval);
-  }, []);
-
-  // No-op refresh; Convex queries are reactive. Kept for API compatibility.
-  const refresh = async () => { return; };
+  // Refresh API: re-run /api/me check
+  const refresh = async () => {
+    await checkSessionStatus();
+  };
 
   const value = useMemo<MeContextValue>(
-    () => ({ me, loading, refresh, redirecting }),
-    [me, loading, redirecting]
+    () => ({ me, loading, refresh, redirecting, error }),
+    [me, loading, redirecting, error]
   );
 
   return <MeContext.Provider value={value}>{children}</MeContext.Provider>;
 }
+
 
 export function useMe() {
   const ctx = useContext(MeContext);

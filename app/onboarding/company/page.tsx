@@ -10,17 +10,15 @@ import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { UploadButton } from '@uploadthing/react';
 import type { OurFileRouter } from '@/app/api/uploadthing/core';
-// Removed unused Select components
-import { useMutation } from 'convex/react';
+import { useAction, useMutation } from 'convex/react';
 import { api } from '@/convex/_generated/api';
 import type { Id } from '@/convex/_generated/dataModel';
 
-const steps = ['Job Description', 'Requirement', 'Employeer Details'] as const;
+const steps = ['Job Description', 'Requirement', 'Employeer Details', 'Verification'] as const;
 
 type Step = typeof steps[number];
 
 type FormData = {
-  // Job fields (Convex jobs schema)
   title: string;
   location: {
     city: string;
@@ -36,8 +34,6 @@ type FormData = {
   educationRequirements: string[];
   experienceRequired: string;
   description: string;
-
-  // Employeer fields (Convex companyData schema) – underlying keys remain companyData for backend compatibility
   companyName: string;
   contactPerson: string;
   email: string;
@@ -45,6 +41,9 @@ type FormData = {
   aboutCompany: string;
   companyPhotoUrl: string;
   agreeToTerms: boolean;
+  phone: string;
+  otp: string;
+  password: string;
 };
 
 type Errors = Partial<
@@ -53,13 +52,15 @@ type Errors = Partial<
     | 'city'
     | 'locality'
     | 'min'
-    | 'max',
+    | 'max'
+    | 'phone'
+    | 'otp'
+    | 'password',
     string
   >
 >;
 
 export default function CompanyOnboardingPage() {
-  "use client";
   const [formData, setFormData] = useState<FormData>({
     title: '',
     location: { city: '', locality: '' },
@@ -77,42 +78,23 @@ export default function CompanyOnboardingPage() {
     aboutCompany: '',
     companyPhotoUrl: '',
     agreeToTerms: false,
+    phone: '',
+    otp: '',
+    password: '',
   });
   const [currentStep, setCurrentStep] = useState(0);
   const [errors, setErrors] = useState<Errors>({});
   const router = useRouter();
-  const upsertCompanyProfile = useMutation(api.users.upsertCompanyProfile);
-  const setCompanyPhoto = useMutation(api.profiles.setCompanyPhoto);
-
-  // Get current user/profile via API (cookie-based) once on mount
-  const [currentUserId, setCurrentUserId] = useState<Id<'users'> | null>(null);
-  const [companyProfileId, setCompanyProfileId] = useState<Id<'profiles'> | null>(null);
+  const checkUserExists = useAction(api.auth.checkUserExists);
+  const requestOtp = useAction(api.auth.requestOtp);
+  const verifyOtp = useAction(api.auth.verifyOtp);
+  const createSession = useMutation(api.auth.createSession);
+  const setPassword = useAction(api.auth.setPassword);
   const [submitting, setSubmitting] = useState(false);
-  const [loadingSession, setLoadingSession] = useState(true);
-  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [debugOtp, setDebugOtp] = useState<string | null>(null);
+  const [otpSent, setOtpSent] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch('/api/me', { cache: 'no-store' });
-        if (res.ok) {
-          const data = await res.json();
-          if (data?.user?._id) setCurrentUserId(data.user._id as Id<'users'>);
-          if (data?.profile?._id) setCompanyProfileId(data.profile._id as Id<'profiles'>);
-          setLoadingSession(false);
-        } else {
-          setSessionError('Session expired. Please login again.');
-          setLoadingSession(false);
-        }
-      } catch {
-        setSessionError('Failed to validate session. Please try again.');
-        setLoadingSession(false);
-      }
-    })();
-  }, []);
-  // removed unused isProfileComplete helper
-
-  // Helper for nested fields
   const handleChange = (field: keyof FormData | string) => (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const value = e.target.value;
     if (field === 'city' || field === 'locality') {
@@ -128,8 +110,7 @@ export default function CompanyOnboardingPage() {
     } else {
       setFormData(prev => ({ ...prev, [field]: value }));
     }
-    // Clear errors for this field (supports nested keys in Errors type)
-    if (field === 'city' || field === 'locality' || field === 'min' || field === 'max') {
+    if (field === 'city' || field === 'locality' || field === 'min' || field === 'max' || field === 'phone' || field === 'otp' || field === 'password') {
       setErrors(prev => ({ ...prev, [field]: undefined }));
     } else if (errors[field as keyof FormData]) {
       setErrors(prev => ({ ...prev, [field as keyof FormData]: undefined }));
@@ -158,8 +139,6 @@ export default function CompanyOnboardingPage() {
     });
   };
 
-  const [uploading, setUploading] = useState(false);
-
   const validateStep = (): boolean => {
     const newErrors: Errors = {};
     if (currentStep === 0) {
@@ -175,46 +154,87 @@ export default function CompanyOnboardingPage() {
       if (!formData.experienceRequired) newErrors.experienceRequired = 'Experience is required';
     }
     if (currentStep === 2) {
-  if (!formData.companyName) newErrors.companyName = 'Employeer name is required';
+      if (!formData.companyName) newErrors.companyName = 'Employeer name is required';
       if (!formData.contactPerson) newErrors.contactPerson = 'Contact person is required';
       if (!formData.companyAddress) newErrors.companyAddress = 'Employeer address is required';
       if (!formData.agreeToTerms) newErrors.agreeToTerms = 'You must agree to the terms';
+    }
+    if (currentStep === 3) {
+      if (!formData.phone) newErrors.phone = 'Phone number is required';
+      if (otpSent && !formData.otp) newErrors.otp = 'OTP is required';
+      if (otpSent && !formData.password) newErrors.password = 'Password is required';
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleNext = async () => {
+  const handleSendOtp = async () => {
     if (validateStep()) {
-      if (currentStep < steps.length - 1) {
-        setCurrentStep(prev => prev + 1);
-      } else {
-        // Final submit: upsert profile only, then redirect
-        try {
-          setSubmitting(true);
-          if (!currentUserId) throw new Error('Not authenticated');
-          const profileId = await upsertCompanyProfile({
-            userId: currentUserId,
-            name: formData.contactPerson || formData.companyName,
-            contactNumber: '',
-            companyData: {
-              companyName: formData.companyName,
-              contactPerson: formData.contactPerson,
-              email: formData.email || 'unknown@example.com',
-              companyAddress: formData.companyAddress,
-              aboutCompany: formData.aboutCompany || '',
-              companyPhotoUrl: formData.companyPhotoUrl || '',
-            },
-          });
-          // ensure we remember profile id for image updates later
-          if (profileId) setCompanyProfileId(profileId as Id<'profiles'>);
-          try { localStorage.setItem('companyProfile', JSON.stringify(formData)); } catch {}
-          router.push('/dashboard/company');
-        } catch (e: any) {
-          alert(e.message || 'Failed to submit');
-        } finally {
-          setSubmitting(false);
+      try {
+        setSubmitting(true);
+        const exists = await checkUserExists({ phone: formData.phone });
+        if (exists.exists) {
+          localStorage.setItem('loginNotice', 'This mobile number already has an account. Please login.');
+          router.push('/auth/login');
+          return;
         }
+        const otpResult = await requestOtp({ phone: formData.phone, purpose: 'register' });
+        if (otpResult.dev) {
+          setDebugOtp(otpResult.debugCode);
+        }
+        setOtpSent(true);
+      } catch (e: any) {
+        alert(e.message || 'Failed to send OTP');
+      } finally {
+        setSubmitting(false);
+      }
+    }
+  };
+
+  const handleNext = () => {
+    if (validateStep()) {
+      setCurrentStep((prev) => Math.min(prev + 1, steps.length - 1));
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (validateStep()) {
+      try {
+        setSubmitting(true);
+        localStorage.setItem("phoneNumber", formData.phone);
+        const verifyResult = await verifyOtp({ phone: formData.phone, code: formData.otp, role: 'company', onboardingData: formData });
+        if (verifyResult.userId) {
+          const userId = verifyResult.userId as unknown as Id<'users'>;
+          await setPassword({ userId, password: formData.password });
+          const session = await createSession({ userId });
+          const setRes = await fetch('/api/session/set', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: session.token, expiresAt: session.expiresAt }),
+          });
+          if (!setRes.ok) {
+            const text = await setRes.text().catch(() => setRes.statusText || 'Failed to set session');
+            throw new Error(`Failed to set session: ${text}`);
+          }
+          localStorage.setItem('phoneNumber', formData.phone);
+          // Notify MeProvider immediately that session cookie is set (httpOnly cookie cannot be read directly)
+          try {
+            window.dispatchEvent(new CustomEvent('session-updated'));
+          } catch (e) {
+            // ignore in non-browser environments
+          }
+          // Give MeProvider a short moment to pick up the session before redirecting
+          await new Promise((res) => setTimeout(res, 100));
+          router.replace('/dashboard/company');
+        } else {
+          setErrors({ ...errors, otp: 'Invalid OTP' });
+        }
+      } catch (e: any) {
+        // Provide clearer guidance depending on where it failed
+        const msg = e?.message || 'Failed to submit. Please try again.';
+        alert(msg);
+      } finally {
+        setSubmitting(false);
       }
     }
   };
@@ -223,7 +243,7 @@ export default function CompanyOnboardingPage() {
     if (currentStep > 0) {
       setCurrentStep(prev => prev - 1);
     } else {
-      router.push('/dashboard/company');
+      router.push('/role-selection');
     }
   };
 
@@ -403,31 +423,6 @@ export default function CompanyOnboardingPage() {
                     const url = (res as any)?.[0]?.url as string | undefined;
                     if (url) {
                       setFormData(prev => ({ ...prev, companyPhotoUrl: url }));
-                      // If we already have a profile, persist immediately.
-                      if (companyProfileId) {
-                        await setCompanyPhoto({ profileId: companyProfileId, url });
-                      } else if (currentUserId) {
-                        // Attempt a lightweight upsert so image is not lost if user leaves.
-                        // Provide minimal placeholder data; will be overwritten on final submit.
-                        try {
-                          const provisionalId = await upsertCompanyProfile({
-                            userId: currentUserId,
-                            name: formData.contactPerson || formData.companyName || 'Employeer',
-                            contactNumber: '',
-                            companyData: {
-                              companyName: formData.companyName || 'Employeer',
-                              contactPerson: formData.contactPerson || 'Contact',
-                              email: formData.email || 'unknown@example.com',
-                              companyAddress: formData.companyAddress || '',
-                              aboutCompany: formData.aboutCompany || '',
-                              companyPhotoUrl: url,
-                            },
-                          });
-                          setCompanyProfileId(provisionalId as Id<'profiles'>);
-                        } catch (e) {
-                          console.warn('Provisional profile creation failed (will retry on submit):', e);
-                        }
-                      }
                     }
                   } finally {
                     setUploading(false);
@@ -444,60 +439,85 @@ export default function CompanyOnboardingPage() {
             </div>
           </div>
         );
-        
-        case 2:
-  return (
-    <div className="space-y-3">
-  <h2 className="text-xl font-semibold mb-6 text-black">Employeer Details</h2>
-      
-  <label className="block text-sm font-medium mb-2 text-black">Employeer Name</label>
-  <Input placeholder="Name of employeer" value={formData.companyName} onChange={handleChange('companyName')} className="bg-white text-black" />
-      {errors.companyName && <p className="text-red-500 text-sm">{errors.companyName}</p>}
-      
-      <label className="block text-sm font-medium mb-2 text-black">Contact Person Name</label>
-      <Input placeholder="Contact person name" value={formData.contactPerson} onChange={handleChange('contactPerson')} className="bg-white text-black" />
-      {errors.contactPerson && <p className="text-red-500 text-sm">{errors.contactPerson}</p>}
-            
-  <label className="block text-sm font-medium mb-2 text-black">Employeer Address</label>
-  <Textarea placeholder="Employeer Address" value={formData.companyAddress} onChange={handleChange('companyAddress')} className="bg-white text-black" />
-      {errors.companyAddress && <p className="text-red-500 text-sm">{errors.companyAddress}</p>}
-      
-      <div className="flex items-center space-x-2">
-        <Checkbox 
-          id="terms" 
-          checked={formData.agreeToTerms} 
-          onCheckedChange={(checked) => setFormData(prev => ({...prev, agreeToTerms: !!checked}))} 
-        />
-        <label htmlFor="terms" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 text-black">
-          I agree to the Naukri's Terms and conditions
-        </label>
-      </div>
-      {errors.agreeToTerms && <p className="text-red-500 text-sm">{errors.agreeToTerms}</p>}
-    </div>
-  );
-
-      
-        default:
+      case 2:
+        return (
+          <div className="space-y-3">
+            <h2 className="text-xl font-semibold mb-6 text-black">Employeer Details</h2>
+            <label className="block text-sm font-medium mb-2 text-black">Employeer Name</label>
+            <Input placeholder="Name of employeer" value={formData.companyName} onChange={handleChange('companyName')} className="bg-white text-black" />
+            {errors.companyName && <p className="text-red-500 text-sm">{errors.companyName}</p>}
+            <label className="block text-sm font-medium mb-2 text-black">Contact Person Name</label>
+            <Input placeholder="Contact person name" value={formData.contactPerson} onChange={handleChange('contactPerson')} className="bg-white text-black" />
+            {errors.contactPerson && <p className="text-red-500 text-sm">{errors.contactPerson}</p>}
+            <label className="block text-sm font-medium mb-2 text-black">Employeer Address</label>
+            <Textarea placeholder="Employeer Address" value={formData.companyAddress} onChange={handleChange('companyAddress')} className="bg-white text-black" />
+            {errors.companyAddress && <p className="text-red-500 text-sm">{errors.companyAddress}</p>}
+            <div className="flex items-center space-x-2">
+              <Checkbox 
+                id="terms" 
+                checked={formData.agreeToTerms} 
+                onCheckedChange={(checked) => setFormData(prev => ({...prev, agreeToTerms: !!checked}))} 
+              />
+              <label htmlFor="terms" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 text-black">
+                I agree to the Naukri's Terms and conditions
+              </label>
+            </div>
+            {errors.agreeToTerms && <p className="text-red-500 text-sm">{errors.agreeToTerms}</p>}
+          </div>
+        );
+      case 3:
+        return (
+          <div className="space-y-3">
+            <h2 className="text-xl font-semibold mb-6 text-black">Verification</h2>
+            <label className="block text-sm font-medium mb-2 text-black">Enter your mobile number</label>
+            <div className="mb-6 flex items-center space-x-2">
+              <div className="bg-white/10 border border-black rounded-lg px-3 py-3">
+                <span className="text-black font-medium">+91</span>
+              </div>
+              <Input
+                type="tel"
+                value={formData.phone}
+                placeholder="Mobile Number"
+                maxLength={10}
+                onChange={handleChange('phone')}
+                className="flex-1 bg-white text-black placeholder:text-gray-500 focus:border-black"
+              />
+              <Button onClick={handleSendOtp} disabled={submitting || otpSent} className="bg-green-600 text-white">
+                {submitting ? <Loader2 className="w-5 h-5 animate-spin" /> : otpSent ? 'OTP Sent' : 'Send OTP'}
+              </Button>
+            </div>
+            {errors.phone && <p className="text-red-500 text-sm">{errors.phone}</p>}
+            {debugOtp && <p className="text-green-500 text-sm">OTP: {debugOtp}</p>}
+            {otpSent && (
+              <>
+                <label className="block text-sm font-medium mb-2 text-black">Enter OTP</label>
+                <Input
+                  type="text"
+                  placeholder="Enter 6-digit OTP"
+                  value={formData.otp}
+                  onChange={handleChange('otp')}
+                  className="w-full bg-white text-black placeholder:text-gray-500 focus:border-black text-center text-xl tracking-widest"
+                  maxLength={6}
+                />
+                {errors.otp && <p className="text-red-500 text-sm">{errors.otp}</p>}
+                <label className="block text-sm font-medium mb-2 text-black">Set Password</label>
+                <Input
+                  type="password"
+                  placeholder="Password"
+                  value={formData.password}
+                  onChange={handleChange('password')}
+                  className="bg-white text-black placeholder:text-gray-500 focus:border-black"
+                />
+                {errors.password && <p className="text-red-500 text-sm">{errors.password}</p>}
+              </>
+            )}
+          </div>
+        );
+      default:
         return null;
     }
   };
 
-  if (loadingSession) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="animate-spin w-8 h-8 text-green-600" />
-        <span className="ml-3 text-lg text-gray-700">Validating session…</span>
-      </div>
-    );
-  }
-  if (sessionError) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <span className="text-lg text-red-600">{sessionError}</span>
-        <Button className="ml-4 bg-green-600 text-white" onClick={() => window.location.href = '/auth/login'}>Login</Button>
-      </div>
-    );
-  }
   return (
     <div className="h-screen bg-white text-black">
       <TopNav title="Enter details" onBack={handleBack} />
@@ -516,20 +536,23 @@ export default function CompanyOnboardingPage() {
         {renderStep()}
         
         <div className="mt-8">
-          <Button
-            onClick={handleNext}
-            className="w-full bg-green-600 hover:bg-green-700 text-white py-3 disabled:opacity-60 flex items-center justify-center gap-2"
-            disabled={submitting}
-          >
-            {submitting && <Loader2 className="w-5 h-5 animate-spin" />}
-            {submitting
-              ? currentStep === steps.length - 1
-                ? 'Submitting...'
-                : 'Saving...'
-              : currentStep === steps.length - 1
-                ? 'Submit'
-                : 'Continue'}
-          </Button>
+          {currentStep < steps.length - 1 ? (
+            <Button
+              onClick={handleNext}
+              className="w-full bg-green-600 hover:bg-green-700 text-white py-3 disabled:opacity-60 flex items-center justify-center gap-2"
+            >
+              Continue
+            </Button>
+          ) : (
+            <Button
+              onClick={handleSubmit}
+              className="w-full bg-green-600 hover:bg-green-700 text-white py-3 disabled:opacity-60 flex items-center justify-center gap-2"
+              disabled={!otpSent || submitting}
+            >
+              {submitting && <Loader2 className="w-5 h-5 animate-spin" />}
+              Submit
+            </Button>
+          )}
         </div>
       </div>
     </div>

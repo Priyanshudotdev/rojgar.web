@@ -1,131 +1,174 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import Logo from "@/components/ui/logo";
-import TopNav from "@/components/ui/top-nav";
-import { Loader2 } from "lucide-react";
-import { useAction } from "convex/react";
+import { Eye, EyeOff, Loader2 } from 'lucide-react';
+import { useAction, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { redirectToDashboard } from "@/lib/auth/redirect";
+import type { Id } from "@/convex/_generated/dataModel";
+import TopNav from '@/components/ui/top-nav';
+import { getDashboardPathByRole } from '@/lib/auth/clientRedirect';
 
-export default function LoginPasswordPage() {
-  const router = useRouter();
+export default function SetPasswordPage() {
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const phone = typeof window !== "undefined" ? localStorage.getItem("phoneNumber") || "" : "";
-  const verifyPassword = useAction(api.auth.verifyPassword);
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const isNew = searchParams.get('isNew') === 'true';
+  const setPasswordMutation = useAction(api.auth.setPassword);
+  const verifyPasswordAction = useAction(api.auth.verifyPassword);
+  const createSession = useMutation(api.auth.createSession);
+
+  const userId = typeof window !== "undefined" ? (localStorage.getItem("verifiedUserId") as Id<"users"> | null) : null;
+  const mode = typeof window !== 'undefined' ? localStorage.getItem('passwordMode') || 'set' : 'set';
+  const phoneNumber = typeof window !== 'undefined' ? localStorage.getItem('phoneNumber') : null;
+
+  // Only enforce redirect for set mode; enter mode intentionally has no userId yet
+  useEffect(() => {
+    if (mode === 'set' && !userId) {
+      router.replace('/auth/login');
+    }
+  }, [mode, userId, router]);
+
+  // (moved mode & phoneNumber earlier)
+
+  const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async () => {
-    if (!password) {
-      setError("Password is required.");
+    setError('');
+    if (submitting) return;
+
+    const clearLocalStorage = () => {
+      try {
+        localStorage.removeItem('authFlow');
+        localStorage.removeItem('passwordMode');
+        localStorage.removeItem('phoneNumber');
+        localStorage.removeItem('verifiedUserId');
+        localStorage.removeItem('newUser');
+        localStorage.removeItem('userRole');
+      } catch {}
+    };
+
+    if (mode === 'enter') {
+      if (!phoneNumber) {
+        setError('Session expired. Please start again.');
+        // router.replace('/auth/login');
+        return;
+      }
+      if (!password) {
+        setError('Enter password');
+        return;
+      }
+      try {
+        setSubmitting(true);
+        const res = await verifyPasswordAction({ phone: phoneNumber, password });
+        await fetch('/api/session/set', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: res.token, expiresAt: res.expiresAt }),
+        });
+        
+        if (res.role === 'company') {
+          // clearLocalStorage();
+          router.replace('/dashboard/company');
+        } else if (res.role === 'job-seeker') {
+          // clearLocalStorage();
+          router.replace('/dashboard/job-seeker');
+        } else {
+          setError('Could not determine your role. Please login again.');
+        }
+      } catch (e: any) {
+        setError(e.message || 'Invalid credentials');
+      } finally {
+        setSubmitting(false);
+      }
       return;
     }
-    if (!phone) {
-      setError("Session expired. Please start again.");
-      router.replace('/auth/login');
+
+    // mode === 'set'
+    // if (!userId) {
+    //   router.replace('/auth/login');
+    //   return;
+    // }
+    if (!password || password !== confirm) {
+      setError('Passwords do not match');
       return;
     }
-    setLoading(true);
-    setError("");
     try {
-      // Use the typed Convex action result instead of any casts
-      type VerifyPasswordResult = Awaited<ReturnType<typeof verifyPassword>>;
-      const res: VerifyPasswordResult = await verifyPassword({ phone, password });
-      if (!res || !res.token) {
-        setError("Incorrect password. Please try again or reset your password.");
-        setLoading(false);
-        return;
-      }
-      // Validate presence/format of expiresAt before calling session API
-  const exp = Number(res.expiresAt);
-      if (!Number.isFinite(exp) || exp <= 0) {
-        setError('Login succeeded but session expiry is invalid. Please try again.');
-        setLoading(false);
-        return;
-      }
-      // Set httpOnly session cookie
-      const sessionRes = await fetch('/api/session/set', {
+      setSubmitting(true);
+      await setPasswordMutation({ userId: userId as Id<'users'>, password });
+      const session = await createSession({ userId: userId as Id<'users'> });
+      await fetch('/api/session/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: res.token, expiresAt: exp }),
+        body: JSON.stringify({ token: session.token, expiresAt: session.expiresAt }),
       });
 
-      console.log(res)
+      const role = localStorage.getItem('userRole') as 'company' | 'job-seeker' | null;
 
-      if (!sessionRes.ok) {
-        setError('Failed to set session. Please try again.');
-        setLoading(false);
-        return;
-      }
-      // Minimal localStorage hygiene (do NOT store session token)
-      // Keep phoneNumber so MeProvider can query Convex by phone for live data
-      try {
-        localStorage.setItem('verifiedUserId', res.userId);
-        localStorage.removeItem('authFlow');
-      } catch {}
-
-      // Centralized redirect: single /api/me call then compute destination
-      try {
-        const meRes = await fetch('/api/me', { cache: 'no-store' });
-        if (meRes.ok) {
-          const me = await meRes.json();
-          const userRole: string | undefined = res.role ?? me?.user?.role ?? undefined;
-          const dest = redirectToDashboard(me?.profile, userRole);
-          window.location.href = dest;
-          return;
-        } else {
-          window.location.href = '/profile';
-          return;
-        }
-      } catch {
-        window.location.href = '/profile';
-        return;
+      if (isNew && role) {
+        // clearLocalStorage();
+        router.replace(`/onboarding/${role}`);
       }
     } catch (e: any) {
-      if (e.message && e.message.includes('Invalid credentials')) {
-        setError('Incorrect password. Please try again or reset your password.');
-      } else if (e.message && e.message.includes('network')) {
-        setError('Network error. Please check your connection and try again.');
-      } else {
-        setError(e.message || 'Login failed. Please try again.');
-      }
+      setError(e.message || 'Failed to set password');
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   };
 
   return (
     <div className="h-screen flex flex-col text-white">
-      <TopNav title="Enter Password" />
-      <div className="px-6 pt-6 flex items-center mb-6">
-        <Logo />
-        <h1 className="text-2xl font-bold ml-2">Rojgar</h1>
-      </div>
-      <div className="flex-1 flex flex-col justify-center max-w-sm mx-auto w-full">
-        <h2 className="text-xl font-semibold mb-4">Enter your password</h2>
-        <Input
-          type="password"
-          value={password}
-          placeholder="Password"
-          onChange={(e) => setPassword(e.target.value)}
-          className="bg-white/10 border border-white/20 text-white placeholder:text-white/60 focus:border-white mb-4"
-        />
-        {error && <p className="text-red-400 text-sm mb-4">{error}</p>}
-        <Button
-          disabled={!password || loading}
-          onClick={handleSubmit}
-          className="w-full bg-white text-green-600 hover:bg-gray-100 font-semibold py-3 mb-4 flex items-center justify-center gap-2 disabled:opacity-70"
-        >
-          {loading && <Loader2 className="w-5 h-5 animate-spin" />}
-          {loading ? "Logging in…" : "Continue"}
+      <TopNav title="Set Password" />
+      <div className="flex-1 flex flex-col justify-center max-w-sm mx-auto w-full px-6 py-8">
+        <h2 className="text-xl font-semibold mb-4">{mode === 'enter' ? 'Enter your password' : 'Set your password'}</h2>
+        <div className="relative mb-3">
+          <Input
+            type={showPassword ? 'text' : 'password'}
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="bg-white/10 border border-white/20 text-white placeholder:text-white/60 pr-10"
+          />
+          <button
+            type="button"
+            aria-label={showPassword ? 'Hide password' : 'Show password'}
+            onClick={() => setShowPassword(p => !p)}
+            className="absolute inset-y-0 right-2 flex items-center text-white/70 hover:text-white"
+          >
+            {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+          </button>
+        </div>
+        {mode !== 'enter' && (
+          <div className="relative mb-3">
+            <Input
+              type={showConfirm ? 'text' : 'password'}
+              placeholder="Confirm password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              className="bg-white/10 border border-white/20 text-white placeholder:text-white/60 pr-10"
+            />
+            <button
+              type="button"
+              aria-label={showConfirm ? 'Hide confirm password' : 'Show confirm password'}
+              onClick={() => setShowConfirm(p => !p)}
+              className="absolute inset-y-0 right-2 flex items-center text-white/70 hover:text-white"
+            >
+              {showConfirm ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+            </button>
+          </div>
+        )}
+        {error && <p className="text-red-400 text-sm mb-2">{error}</p>}
+        <Button onClick={handleSubmit} disabled={submitting} className="w-full bg-white text-green-600 hover:bg-gray-100 font-semibold py-3 flex items-center justify-center gap-2 disabled:opacity-70">
+          {submitting && <Loader2 className="animate-spin w-5 h-5" />}
+          {submitting ? (mode === 'enter' ? 'Logging in...' : 'Saving...') : (mode === 'enter' ? 'Login' : 'Continue')}
         </Button>
-        <p className="text-sm text-center">Forgot password? <button className="underline" onClick={() => router.push("/auth/forgot-password")}>Reset</button></p>
       </div>
-      <div className="text-center px-6 pb-6 text-sm opacity-75">By continuing you agree to our Terms & Privacy.</div>
     </div>
   );
 }

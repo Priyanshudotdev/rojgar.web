@@ -228,13 +228,14 @@ export default function CompanyDashboardPage() {
     </div>
   ) : null;
 
-  // Avoid rendering content that accesses `me` when unauthenticated while redirecting
-  if (!meLoading && !me) {
-    return null;
-  }
-
   return (
     <div className="bg-white">
+
+      {/* Unauthenticated minimal fallback (middleware should handle this; guard just in case) */}
+      {!meLoading && !me && (
+        <div className="p-4 text-center text-gray-500">You are not logged in.</div>
+      )}
+
       {/* Header */}
       {meLoading ? (
         <DashboardHeaderSkeleton />

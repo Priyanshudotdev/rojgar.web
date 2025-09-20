@@ -70,12 +70,19 @@ export default function JobSeekerDashboard() {
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
               <Avatar className="w-10 h-10">
-                <AvatarImage src="https://images.pexels.com/photos/2379004/pexels-photo-2379004.jpeg" />
-                <AvatarFallback>SB</AvatarFallback>
+                <AvatarImage src={me?.profile?.jobSeekerData?.profilePhotoUrl || ''} />
+                <AvatarFallback>
+                  {(me?.profile?.name || 'JS')
+                    .split(' ')
+                    .map((n: string) => n[0])
+                    .join('')
+                    .toUpperCase()
+                    .slice(0, 2)}
+                </AvatarFallback>
               </Avatar>
               <div>
                 <h1 className="font-semibold text-black">{me?.profile?.name || 'Job Seeker'}</h1>
-                <p className="text-sm text-gray-600">Mechanic ▼</p>
+                <p className="text-sm text-gray-600">{me?.profile?.jobSeekerData?.jobRole || 'Find jobs'} ▼</p>
               </div>
             </div>
             <Bell className="w-6 h-6 text-gray-600" />
@@ -128,7 +135,17 @@ export default function JobSeekerDashboard() {
                     <div className="flex items-center space-x-3">
                       <div className="w-10 h-10 bg-gray-200 rounded-lg flex items-center justify-center overflow-hidden">
                           {job.company?.photoUrl ? (
-                            <AvatarImage src={job.company.photoUrl as string} />
+                            <Avatar className="w-full h-full rounded-lg">
+                              <AvatarImage src={job.company.photoUrl as string} />
+                              <AvatarFallback>
+                                {(job.company?.name || 'E')
+                                  .split(' ')
+                                  .map((n: string) => n[0])
+                                  .join('')
+                                  .toUpperCase()
+                                  .slice(0, 2)}
+                              </AvatarFallback>
+                            </Avatar>
                         ) : (
                             <Logo size={40} alt="Employeer Logo" className="rounded-full" />
                         )}

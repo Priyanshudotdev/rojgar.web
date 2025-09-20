@@ -1,6 +1,6 @@
 // Centralized role derivation and redirect helpers for authenticated users
 // Role preference order: profile.companyData -> profile.jobSeekerData -> user.role
-// Falls back to '/profile' if role is unknown
+// No fallback route on unknown role; caller should handle null
 
 export type Role = 'company' | 'job-seeker';
 export interface MinimalProfile {
@@ -26,7 +26,7 @@ export function deriveUserRole(
 export function redirectToDashboard(
   profile: MinimalProfile | null | undefined,
   userRole?: string,
-): string {
+): string | null {
   const roleInput =
     userRole === 'company' || userRole === 'job-seeker'
       ? (userRole as Role)
@@ -34,5 +34,5 @@ export function redirectToDashboard(
   const role = deriveUserRole(profile, { role: roleInput });
   if (role === 'company') return '/dashboard/company';
   if (role === 'job-seeker') return '/dashboard/job-seeker';
-  return '/profile';
+  return null;
 }

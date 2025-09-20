@@ -16,7 +16,8 @@ export default function RoleSelection() {
   const handleContinue = () => {
     if (selectedRole) {
       localStorage.setItem('userRole', selectedRole);
-      router.push('/auth/phone');
+      try { localStorage.setItem('authFlow', 'register'); } catch {}
+      router.push('/auth/register');
     }
   };
 

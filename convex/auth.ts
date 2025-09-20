@@ -100,10 +100,11 @@ export const verifyOtp = action({
     phone: v.string(),
     code: v.string(),
     role: v.optional(v.union(v.literal('job-seeker'), v.literal('company'))),
+    onboardingData: v.optional(v.any()),
   },
   handler: async (
     ctx,
-    { phone, code, role },
+    { phone, code, role, onboardingData },
   ): Promise<{
     userId?: string;
     exists: boolean;
@@ -125,9 +126,7 @@ export const verifyOtp = action({
       throw new Error('Invalid code');
     }
 
-    // If registering, upsert user only when user does not exist; if logging in (no role), only consume OTP
-    if (role) {
-      // Check if user already exists for this phone; if yes, do not overwrite role
+    if (role && onboardingData) {
       const existingUser = (await ctx.runQuery(api.users.getUserByPhone, {
         phone: normalized,
       })) as any;
@@ -151,16 +150,15 @@ export const verifyOtp = action({
         otpId: rec._id,
         phone: normalized,
         role,
+        onboardingData,
       })) as { userId: string };
       return { userId: result.userId, exists: true, role, newlyCreated: true };
     } else {
       await ctx.runMutation(api.otp.consumeOtp, { otpId: rec._id });
-      // Determine if the user already exists
       const existingUser = (await ctx.runQuery(api.users.getUserByPhone, {
         phone: normalized,
       })) as any;
       if (existingUser) {
-        // derive role from profile if available using runQuery (allowed in actions)
         const profileResult = (await ctx.runQuery(
           api.profiles.getProfileByUserId,
           {

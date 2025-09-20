@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState, type ChangeEvent } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
@@ -17,6 +17,8 @@ export default function SetPasswordPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const isNew = searchParams.get('isNew') === 'true';
   const setPasswordMutation = useAction(api.auth.setPassword);
   const verifyPasswordAction = useAction(api.auth.verifyPassword);
   const createSession = useMutation(api.auth.createSession);
@@ -28,7 +30,7 @@ export default function SetPasswordPage() {
   // Only enforce redirect for set mode; enter mode intentionally has no userId yet
   useEffect(() => {
     if (mode === 'set' && !userId) {
-      router.replace('/auth/phone');
+      router.replace('/auth/login');
     }
   }, [mode, userId, router]);
 
@@ -39,11 +41,22 @@ export default function SetPasswordPage() {
   const handleSubmit = async () => {
     setError('');
     if (submitting) return;
+
+    const clearLocalStorage = () => {
+      try {
+        localStorage.removeItem('authFlow');
+        localStorage.removeItem('passwordMode');
+        localStorage.removeItem('phoneNumber');
+        localStorage.removeItem('verifiedUserId');
+        localStorage.removeItem('newUser');
+        localStorage.removeItem('userRole');
+      } catch {}
+    };
+
     if (mode === 'enter') {
-      // Existing user entering password directly (userId may not be in localStorage yet)
       if (!phoneNumber) {
         setError('Session expired. Please start again.');
-        router.replace('/auth/phone');
+        // router.replace('/auth/login');
         return;
       }
       if (!password) {
@@ -58,19 +71,15 @@ export default function SetPasswordPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ token: res.token, expiresAt: res.expiresAt }),
         });
-  const roleVal = res.role;
-  if (roleVal) localStorage.setItem('userRole', roleVal);
-        localStorage.setItem('verifiedUserId', res.userId);
-        const isNew = localStorage.getItem('newUser') === '1';
-        try { localStorage.removeItem('passwordMode'); if (!isNew) localStorage.removeItem('newUser'); } catch {}
-        if (isNew && res.role) {
-          router.replace(`/onboarding/${res.role}`);
-        } else if (res.role === 'company') {
+        
+        if (res.role === 'company') {
+          clearLocalStorage();
           router.replace('/dashboard/company');
         } else if (res.role === 'job-seeker') {
+          clearLocalStorage();
           router.replace('/dashboard/job-seeker');
         } else {
-          router.replace('/role-selection');
+          setError('Could not determine your role. Please login again.');
         }
       } catch (e: any) {
         setError(e.message || 'Invalid credentials');
@@ -79,8 +88,12 @@ export default function SetPasswordPage() {
       }
       return;
     }
-    // mode === set
-    if (!userId) return;
+
+    // mode === 'set'
+    // if (!userId) {
+    //   router.replace('/auth/login');
+    //   return;
+    // }
     if (!password || password !== confirm) {
       setError('Passwords do not match');
       return;
@@ -94,17 +107,12 @@ export default function SetPasswordPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: session.token, expiresAt: session.expiresAt }),
       });
-      const role = localStorage.getItem('userRole');
-      const isNew = localStorage.getItem('newUser') === '1';
-      try { localStorage.removeItem('passwordMode'); if (!isNew) localStorage.removeItem('newUser'); } catch {}
+
+      const role = localStorage.getItem('userRole') as 'company' | 'job-seeker' | null;
+
       if (isNew && role) {
+        clearLocalStorage();
         router.replace(`/onboarding/${role}`);
-      } else if (role === 'company') {
-        router.replace('/dashboard/company');
-      } else if (role === 'job-seeker') {
-        router.replace('/dashboard/job-seeker');
-      } else {
-        router.replace('/role-selection');
       }
     } catch (e: any) {
       setError(e.message || 'Failed to set password');
@@ -123,7 +131,7 @@ export default function SetPasswordPage() {
             type={showPassword ? 'text' : 'password'}
             placeholder="Password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e: ChangeEvent<HTMLInputElement>) => setPassword(e.target.value)}
             className="bg-white/10 border border-white/20 text-white placeholder:text-white/60 pr-10"
           />
           <button
@@ -141,7 +149,7 @@ export default function SetPasswordPage() {
               type={showConfirm ? 'text' : 'password'}
               placeholder="Confirm password"
               value={confirm}
-              onChange={(e) => setConfirm(e.target.value)}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setConfirm(e.target.value)}
               className="bg-white/10 border border-white/20 text-white placeholder:text-white/60 pr-10"
             />
             <button

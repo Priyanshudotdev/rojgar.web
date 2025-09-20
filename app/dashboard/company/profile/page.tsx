@@ -62,6 +62,10 @@ export default function CompanyProfilePage() {
                 <p className="text-gray-600">{company.contactPerson}</p>
               </div>
               <div>
+                <h4 className="font-semibold">Contact Number</h4>
+                <p className="text-gray-600">{me?.profile?.contactNumber}</p>
+              </div>
+              <div>
                 <h4 className="font-semibold">Address</h4>
                 <p className="text-gray-600">{company.companyAddress}</p>
               </div>

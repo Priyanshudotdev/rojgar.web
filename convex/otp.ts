@@ -55,8 +55,9 @@ export const consumeOtpAndUpsertUser = mutation({
     otpId: v.id('otps'),
     phone: v.string(),
     role: v.optional(v.union(v.literal('job-seeker'), v.literal('company'))),
+    onboardingData: v.optional(v.any()),
   },
-  handler: async (ctx, { otpId, phone, role }) => {
+  handler: async (ctx, { otpId, phone, role, onboardingData }) => {
     await ctx.db.patch(otpId, { consumed: true });
     const existingUser = await ctx.db
       .query('users')
@@ -66,41 +67,64 @@ export const consumeOtpAndUpsertUser = mutation({
     if (!existingUser) {
       const userId = await ctx.db.insert('users', {
         phone,
-        email: undefined,
+        email: onboardingData?.email,
         role: role ?? 'job-seeker',
         phoneVerified: true,
         createdAt: now,
       });
-      // Create a minimal profile so dashboards depending on profileId work immediately
-      await ctx.db.insert('profiles', {
-        userId,
-        name: 'New User',
-        contactNumber: phone,
-        createdAt: now,
-        // Populate companyData or jobSeekerData minimally based on role for role derivation
-        ...(role === 'company'
-          ? {
-              companyData: {
-                companyName: 'New Employeer',
-                contactPerson: 'Owner',
-                email: '',
-                companyAddress: '',
-                aboutCompany: '',
-                companyPhotoUrl: '',
-              },
-            }
-          : {
-              jobSeekerData: {
-                dateOfBirth: now,
-                gender: 'Prefer not to say',
-                education: '',
-                jobRole: '',
-                experience: '',
-                location: '',
-                skills: [],
-              },
-            }),
-      });
+
+      if (role === 'company') {
+        const profileId = await ctx.db.insert('profiles', {
+          userId,
+          name: onboardingData.contactPerson || onboardingData.companyName,
+          contactNumber: phone,
+          createdAt: now,
+          companyData: {
+            companyName: onboardingData.companyName,
+            contactPerson: onboardingData.contactPerson,
+            email: onboardingData.email,
+            companyAddress: onboardingData.companyAddress,
+            aboutCompany: onboardingData.aboutCompany,
+            companyPhotoUrl: onboardingData.companyPhotoUrl,
+          },
+        });
+
+        await ctx.db.insert('jobs', {
+          companyId: profileId,
+          title: onboardingData.title,
+          location: onboardingData.location,
+          salary: {
+            min: Number(onboardingData.salary.min),
+            max: Number(onboardingData.salary.max),
+          },
+          jobType: onboardingData.jobType,
+          staffNeeded: Number(onboardingData.staffNeeded),
+          genderRequirement: onboardingData.genderRequirement,
+          educationRequirements: onboardingData.educationRequirements,
+          experienceRequired: onboardingData.experienceRequired,
+          description: onboardingData.description,
+          status: 'Active',
+          createdAt: now,
+        });
+      } else if (role === 'job-seeker') {
+        await ctx.db.insert('profiles', {
+          userId,
+          name: onboardingData.name,
+          contactNumber: phone,
+          createdAt: now,
+          jobSeekerData: {
+            dateOfBirth: Date.parse(onboardingData.dateOfBirth),
+            gender: onboardingData.gender,
+            education: onboardingData.education,
+            jobRole: onboardingData.jobRole,
+            experience: onboardingData.yearOfExperience,
+            location: onboardingData.location,
+            skills: onboardingData.skills,
+            profilePhotoUrl: onboardingData.profilePhotoUrl,
+          },
+        });
+      }
+
       return { userId };
     }
     const patch: Record<string, any> = {};

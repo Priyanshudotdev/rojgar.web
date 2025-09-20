@@ -58,45 +58,51 @@ type SessionRedirectState = {
   redirectTo?: string;
   checking: boolean;
   error?: string;
+  isPasswordPage: boolean;
 };
 
 export function useSessionAuthedRedirect(): SessionRedirectState {
   const [state, setState] = useState<SessionRedirectState>({
     authed: false,
     checking: true,
+    isPasswordPage: false,
   });
 
   useEffect(() => {
     let cancelled = false;
-    // Track if this hook instance started the guard
     let disposeGuard: (() => void) | null = null;
+
+    const currentPath = window.location.pathname;
+    const isPasswordPage = currentPath.includes('/auth/login/password') || currentPath.includes('/auth/register/password');
+
+    const isOnboardingPage = currentPath.startsWith('/onboarding');
+
+    if (isPasswordPage || isOnboardingPage) {
+      setState({ authed: false, checking: false, isPasswordPage: true });
+      return;
+    }
+
     (async () => {
-      // Skip heavy work if a redirect is already in progress
       if (redirectGuard.isInProgress()) {
         if (process.env.NODE_ENV !== 'production') {
-          console.debug(
-            '[useSessionAuthedRedirect] Redirect in progress; skipping.',
-          );
+          console.debug('[useSessionAuthedRedirect] Redirect in progress; skipping.');
         }
-        if (!cancelled) setState({ authed: false, checking: false });
+        if (!cancelled) setState({ authed: false, checking: false, isPasswordPage: false });
         return;
       }
 
-      // Try hydrate from MeProvider cache to avoid duplicate API calls
       const hydrateFromCache = () => {
         try {
           const raw = localStorage.getItem('me-cache:v1');
           if (!raw) return null;
           const parsed = JSON.parse(raw) as { t: number; v: any };
-          // Tighter TTL for redirect decisions to reduce stale-auth
-          const TTL_MS = 60 * 1000; // 1 minute for hook redirect decisions
+          const TTL_MS = 60 * 1000;
           if (Date.now() - parsed.t < TTL_MS) return parsed.v;
         } catch {}
         return null;
       };
 
       try {
-        // Debounce to avoid rapid-fire calls when navigating between auth pages
         await redirectGuard.debounce(300);
 
         const cached = hydrateFromCache();
@@ -105,25 +111,20 @@ export function useSessionAuthedRedirect(): SessionRedirectState {
           const user = cached?.user;
           if (user) {
             const userRole: string | undefined = user?.role ?? undefined;
-            let redirectTo = '/profile';
-            try {
-              redirectTo = redirectToDashboard(profile, userRole);
-            } catch {
-              redirectTo = '/profile';
+            const redirectTo = redirectToDashboard(profile, userRole) ?? undefined;
+            if (redirectTo) {
+              disposeGuard = redirectGuard.start();
             }
-            // Start guard only when an authenticated redirect is likely to occur
-            disposeGuard = redirectGuard.start();
-            if (!cancelled)
-              setState({ authed: true, redirectTo, checking: false });
+            if (!cancelled) setState({ authed: true, redirectTo, checking: false, isPasswordPage: false });
           } else {
-            if (!cancelled) setState({ authed: false, checking: false });
+            if (!cancelled) setState({ authed: false, checking: false, isPasswordPage: false });
           }
           return;
         }
 
         const res = await fetch('/api/me', { cache: 'no-store' });
         if (!res.ok) {
-          if (!cancelled) setState({ authed: false, checking: false });
+          if (!cancelled) setState({ authed: false, checking: false, isPasswordPage: false });
           return;
         }
         const data = await res.json();
@@ -131,27 +132,19 @@ export function useSessionAuthedRedirect(): SessionRedirectState {
         const user = data?.user;
         if (user) {
           const userRole: string | undefined = user?.role ?? undefined;
-          let redirectTo = '/profile';
-          try {
-            redirectTo = redirectToDashboard(profile, userRole);
-          } catch {
-            redirectTo = '/profile';
+          const redirectTo = redirectToDashboard(profile, userRole) ?? undefined;
+          if (redirectTo) {
+            disposeGuard = redirectGuard.start();
           }
-          disposeGuard = redirectGuard.start();
-          if (!cancelled)
-            setState({ authed: true, redirectTo, checking: false });
+          if (!cancelled) setState({ authed: true, redirectTo, checking: false, isPasswordPage: false });
         } else {
-          if (!cancelled) setState({ authed: false, checking: false });
+          if (!cancelled) setState({ authed: false, checking: false, isPasswordPage: false });
         }
       } catch (e: any) {
-        if (!cancelled)
-          setState({
-            authed: false,
-            checking: false,
-            error: e?.message || 'Session check failed',
-          });
+        if (!cancelled) setState({ authed: false, checking: false, error: e?.message || 'Session check failed', isPasswordPage: false });
       }
     })();
+
     return () => {
       cancelled = true;
       if (disposeGuard) {

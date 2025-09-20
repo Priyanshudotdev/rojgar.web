@@ -34,6 +34,6 @@ export async function GET() {
   // Ensure top-level shape is always an object with user and profile keys
   return NextResponse.json({
     user: safeUser,
-    profile: (profileData as any)?.profile ?? null,
+    profile: profileData ? (profileData as any).profile : null,
   });
 }

@@ -21,8 +21,7 @@ export default function LoginPhonePage() {
   const requestOtp = useAction(api.auth.requestOtp);
 
   useEffect(() => {
-    // Note: `loginNotice` is set from the Register flow when a phone number already has an account
-    // (see: app/auth/register/page.tsx). It informs users to login instead of registering again.
+    // Show any notice set by registration flow
     const msg = localStorage.getItem('loginNotice');
     if (msg) {
       setError(msg);
@@ -55,24 +54,20 @@ export default function LoginPhonePage() {
       console.log("Phone Number:- ", phone)
       const existsRes = await checkUserExists({ phone });
       if (!existsRes.exists) {
-        // New flow: send new users to onboarding instead of direct registration
+        // Redirect brand new users directly to registration
         try {
-          localStorage.removeItem('authFlow');
-          // Intentionally clear any partial phone capture here. The onboarding screen does not
-          // read `phoneNumber`; users will go through role selection first, then to auth/phone.
-          localStorage.removeItem('phoneNumber');
-          localStorage.setItem(
-            'onboardingNotice',
-            "We couldn't find an account for this mobile number. Let's get you set up — please complete onboarding first."
-          );
+          localStorage.setItem('authFlow', 'register');
+          localStorage.setItem('phoneNumber', phone);
+          localStorage.setItem('registerNotice', "We couldn't find an account for this mobile number. Let's create one.");
         } catch {}
-        router.replace('/onboarding');
+        router.replace('/auth/register');
         return;
       }
-      // Redirect to password entry page
-      localStorage.setItem('authFlow', 'login');
-      localStorage.setItem('phoneNumber', phone);
-      router.push('/auth/login/password');
+  // Redirect to password entry page
+  localStorage.setItem('authFlow', 'login');
+  localStorage.setItem('phoneNumber', phone);
+  localStorage.setItem('passwordMode', 'enter');
+  router.push('/auth/login/password');
     } catch (e: any) {
       if (e.message && e.message.includes('network')) {
         setError('Network error. Please check your connection and try again.');

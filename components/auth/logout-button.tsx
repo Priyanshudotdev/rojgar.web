@@ -14,7 +14,7 @@ export function LogoutButton({ className }: { className?: string }) {
     try {
       localStorage.clear();
     } catch {}
-    router.replace("/auth/phone");
+    router.replace("/auth/login");
   };
 
   return (
