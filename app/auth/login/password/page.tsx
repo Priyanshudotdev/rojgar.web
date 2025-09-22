@@ -10,6 +10,8 @@ import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import TopNav from '@/components/ui/top-nav';
 import { getDashboardPathByRole } from '@/lib/auth/clientRedirect';
+import { normalizePhoneNumber } from '@/lib/utils/phone';
+import { AuthError, categorizeError, getUserFriendlyMessage, buildBackoff } from '@/lib/utils/errors';
 
 export default function SetPasswordPage() {
   const [password, setPassword] = useState("");
@@ -66,12 +68,53 @@ export default function SetPasswordPage() {
       }
       try {
         setSubmitting(true);
-        const res = await verifyPasswordAction({ phone: phoneNumber, password });
-        await fetch('/api/session/set', {
+        const normalized = normalizePhoneNumber(phoneNumber);
+        let res;
+        // Retry on transient network errors, parse server [CODE: ...] messages when present
+        let attempt = 0;
+        for (;;) {
+          try {
+            res = await verifyPasswordAction({ phone: normalized, password });
+            break;
+          } catch (err: any) {
+            const msg = String(err?.message || '');
+            const match = msg.match(/\[CODE:\s*([A-Z_]+)\]/);
+            if (match?.[1]) {
+              const code = match[1] as any;
+              const authErr = new AuthError(code, msg, { category: undefined });
+              setError(getUserFriendlyMessage(authErr));
+              setSubmitting(false);
+              return;
+            }
+            const ce = categorizeError(err);
+            if (ce.code === 'NETWORK_ERROR' && attempt < 2) {
+              await new Promise((r) => setTimeout(r, buildBackoff(attempt++)));
+              continue;
+            }
+            if (ce.code === 'UNKNOWN_ERROR' && /Invalid credentials/i.test(msg)) {
+              const authErr = new AuthError('INVALID_PASSWORD', 'Invalid credentials', { category: 'auth' });
+              setError(getUserFriendlyMessage(authErr));
+              setSubmitting(false);
+              return;
+            }
+            setError(getUserFriendlyMessage(ce));
+            setSubmitting(false);
+            return;
+          }
+        }
+        const setRes = await fetch('/api/session/set', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ token: res.token, expiresAt: res.expiresAt }),
         });
+        if (!setRes.ok) {
+          const text = await setRes.text().catch(() => setRes.statusText || 'Failed to set session');
+          const err = new AuthError('SESSION_CREATE_FAILED', `Failed to set session: ${text}`, { category: 'session', status: setRes.status });
+          throw err;
+        }
+        try { window.dispatchEvent(new CustomEvent('session-updated')); } catch {}
+        await new Promise((r) => setTimeout(r, 100));
         
         if (res.role === 'company') {
           // clearLocalStorage();
@@ -83,7 +126,8 @@ export default function SetPasswordPage() {
           setError('Could not determine your role. Please login again.');
         }
       } catch (e: any) {
-        setError(e.message || 'Invalid credentials');
+        const ce = categorizeError(e);
+        setError(getUserFriendlyMessage(ce));
       } finally {
         setSubmitting(false);
       }
@@ -103,11 +147,21 @@ export default function SetPasswordPage() {
       setSubmitting(true);
       await setPasswordMutation({ userId: userId as Id<'users'>, password });
       const session = await createSession({ userId: userId as Id<'users'> });
-      await fetch('/api/session/set', {
+      const setRes2 = await fetch('/api/session/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ token: session.token, expiresAt: session.expiresAt }),
       });
+      if (!setRes2.ok) {
+        const text = await setRes2.text().catch(() => setRes2.statusText || 'Failed to set session');
+        const err = new AuthError('SESSION_CREATE_FAILED', `Failed to set session: ${text}`, { category: 'session', status: setRes2.status });
+        setError(getUserFriendlyMessage(err));
+        setSubmitting(false);
+        return;
+      }
+      try { window.dispatchEvent(new CustomEvent('session-updated')); } catch {}
+      await new Promise((r) => setTimeout(r, 100));
 
       const role = localStorage.getItem('userRole') as 'company' | 'job-seeker' | null;
 

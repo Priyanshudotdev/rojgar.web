@@ -16,9 +16,11 @@ import type {
 import type * as auth from "../auth.js";
 import type * as files from "../files.js";
 import type * as jobs from "../jobs.js";
+import type * as migrations from "../migrations.js";
 import type * as notifications from "../notifications.js";
 import type * as otp from "../otp.js";
 import type * as profiles from "../profiles.js";
+import type * as shared_jobMatch from "../shared/jobMatch.js";
 import type * as users from "../users.js";
 import type * as users_internal from "../users_internal.js";
 
@@ -34,9 +36,11 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   files: typeof files;
   jobs: typeof jobs;
+  migrations: typeof migrations;
   notifications: typeof notifications;
   otp: typeof otp;
   profiles: typeof profiles;
+  "shared/jobMatch": typeof shared_jobMatch;
   users: typeof users;
   users_internal: typeof users_internal;
 }>;

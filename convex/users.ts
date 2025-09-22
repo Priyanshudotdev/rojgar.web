@@ -1,5 +1,6 @@
 import { mutation, query } from './_generated/server';
 import { v } from 'convex/values';
+import { normalizePhoneNumber } from '../lib/utils/phone';
 
 const RoleEnum = v.union(v.literal('job-seeker'), v.literal('company'));
 const GenderEnum = v.union(
@@ -12,22 +13,18 @@ const GenderEnum = v.union(
 export const createUser = mutation({
   args: { phone: v.string(), role: RoleEnum, email: v.optional(v.string()) },
   handler: async (ctx, args) => {
-    // Normalize phone
-    const normalized = args.phone.startsWith('+')
-      ? args.phone
-      : `+91${args.phone}`;
-    // Check for existing user by normalized phone
-    let existingUser = await ctx.db
+    // Normalize phone consistently
+    let normalized: string;
+    try {
+      normalized = normalizePhoneNumber(args.phone);
+    } catch (e: any) {
+      throw new Error(e?.message || 'Invalid phone number');
+    }
+    // Check for existing user by normalized phone only
+    const existingUser = await ctx.db
       .query('users')
       .withIndex('by_phone', (q) => q.eq('phone', normalized))
       .unique();
-    // Also check by raw phone if not found
-    if (!existingUser && args.phone !== normalized) {
-      existingUser = await ctx.db
-        .query('users')
-        .withIndex('by_phone', (q) => q.eq('phone', args.phone))
-        .unique();
-    }
     if (existingUser) {
       return existingUser._id;
     }
@@ -129,18 +126,17 @@ export const upsertCompanyProfile = mutation({
 export const getUserByPhone = query({
   args: { phone: v.string() },
   handler: async (ctx, { phone }) => {
-    // Support both normalized (+91XXXXXXXXXX) and raw (XXXXXXXXXX) formats
-    const normalized = phone.startsWith('+') ? phone : `+91${phone}`;
-    let user = await ctx.db
+    // Normalize and query only by canonical format
+    let normalized: string;
+    try {
+      normalized = normalizePhoneNumber(phone);
+    } catch (e: any) {
+      return null;
+    }
+    const user = await ctx.db
       .query('users')
       .withIndex('by_phone', (q) => q.eq('phone', normalized))
       .unique();
-    if (!user && phone !== normalized) {
-      user = await ctx.db
-        .query('users')
-        .withIndex('by_phone', (q) => q.eq('phone', phone))
-        .unique();
-    }
     return user ?? null;
   },
 });

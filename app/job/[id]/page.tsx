@@ -2,39 +2,17 @@
 
 import { useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { ArrowLeft, Share2, MapPin, DollarSign, Clock, Users } from 'lucide-react';
-import Logo from '@/components/ui/logo';
-import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
-import { useQuery } from 'convex/react';
-import { api } from '@/convex/_generated/api';
-import type { Id } from '@/convex/_generated/dataModel';
+import { ArrowLeft, Share2, MapPin, DollarSign, Clock, Users, Bookmark } from 'lucide-react';
 
-export default function JobDetailPage() {
-  const router = useRouter();
-  const params = useParams();
-  const jobId = (params?.id as string) as Id<'jobs'>;
-  const data = useQuery(api.jobs.getJobPublicById, jobId ? { jobId } : 'skip') as
-    | { job: any; company: { name?: string; photoUrl?: string } | null }
-    | null
-    | undefined;
-  const loading = data === undefined;
+// ... (rest of the file)
 
-  const handleApply = () => {
-    // TODO: Implement application flow; for now, a placeholder
-    alert('Application submitted successfully!');
-  };
-
-  return (
-    <div className="h-screen bg-white">
-      {/* Header */}
       <div className="flex items-center justify-between p-4 border-b">
-  <button onClick={() => router.push('/dashboard/job-seeker')}>
-          <ArrowLeft className="w-6 h-6" />
+        <button onClick={() => router.back()}>
+          <ArrowLeft className="w-6 h-6 text-black" />
         </button>
-        <h1 className="font-semibold">Details</h1>
-        <Button variant="outline" size="icon">
-          <Share2 className="w-4 h-4" />
+        <h1 className="font-semibold text-black">Details</h1>
+        <Button variant="ghost" size="icon">
+          <Bookmark className="w-6 h-6 text-black" />
         </Button>
       </div>
 
@@ -77,21 +55,53 @@ export default function JobDetailPage() {
               </div>
             </div>
 
-            {/* Job Info Cards */}
-            <div className="grid grid-cols-3 gap-3">
-              <Card className="p-3 text-center">
-                <Clock className="w-5 h-5 mx-auto mb-1 text-gray-600" />
-                <p className="text-xs text-gray-600">{data.job.experienceRequired}</p>
-                <p className="text-sm font-medium">{data.job.jobType}</p>
-              </Card>
-              <Card className="p-3 text-center">
-                <Users className="w-5 h-5 mx-auto mb-1 text-gray-600" />
-                <p className="text-xs text-gray-600">{data.job.genderRequirement}</p>
-              </Card>
-              <Card className="p-3 text-center">
-                <span className="text-xl">👤</span>
-                <p className="text-xs text-gray-600">{data.job.staffNeeded} openings</p>
-              </Card>
+            {/* Job Info */}
+            <div className="flex justify-between items-center text-center py-4">
+              <div>
+                <p className="text-sm text-gray-500">Experience</p>
+                <p className="font-semibold text-black">{data.job.experienceRequired}</p>
+              </div>
+              <div className="border-l h-10"></div>
+              <div>
+                <p className="text-sm text-gray-500">Job Type</p>
+                <p className="font-semibold text-black">{data.job.jobType}</p>
+              </div>
+              <div className="border-l h-10"></div>
+              <div>
+                <p className="text-sm text-gray-500">Level</p>
+                <p className="font-semibold text-black">Entry level</p>
+              </div>
+            </div>
+
+            {/* Managed By */}
+            <div className="bg-orange-50 p-4 rounded-lg">
+              <p className="text-sm text-gray-600 mb-2">This job post is managed by</p>
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 bg-gray-200 rounded-full overflow-hidden">
+                  {data.company?.photoUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={data.company.photoUrl} alt={data.company?.name || 'Manager'} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full bg-gray-300"></div>
+                  )}
+                </div>
+                <div>
+                  <p className="font-semibold text-black">{data.company?.name || 'Hiring Manager'}</p>
+                  <p className="text-xs text-gray-500">Online 2 days ago</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Must Have Skills */}
+            <div>
+              <h3 className="font-semibold mb-3 text-black">Must Have Skills</h3>
+              <div className="flex flex-wrap gap-2">
+                {data.job.educationRequirements.map((skill: string) => (
+                  <div key={skill} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-md">
+                    {skill}
+                  </div>
+                ))}
+              </div>
             </div>
 
             {/* Job Description */}
@@ -104,20 +114,18 @@ export default function JobDetailPage() {
       </div>
 
       {/* Bottom Action Buttons */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-4">
-        <div className="flex space-x-3">
-          <Button variant="outline" size="sm">
-            <Share2 className="w-4 h-4" />
-          </Button>
-          <Button
-            onClick={handleApply}
-            disabled={!!data && data.job.status === 'Closed'}
-            className={`flex-1 text-white ${data && data.job.status === 'Closed' ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
-            title={data && data.job.status === 'Closed' ? 'This job is closed' : undefined}
-          >
-            {data && data.job.status === 'Closed' ? 'Job Closed' : 'Apply Now'}
-          </Button>
-        </div>
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t p-4 flex items-center justify-between">
+        <Button variant="ghost" size="icon">
+          <Share2 className="w-6 h-6 text-black" />
+        </Button>
+        <Button
+          onClick={handleApply}
+          disabled={!!data && data.job.status === 'Closed'}
+          className={`w-full max-w-xs text-white rounded-full py-3 ${data && data.job.status === 'Closed' ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
+          title={data && data.job.status === 'Closed' ? 'This job is closed' : undefined}
+        >
+          {data && data.job.status === 'Closed' ? 'Job Closed' : 'Apply Now'}
+        </Button>
       </div>
     </div>
   );

@@ -71,3 +71,44 @@ export const markAllAsRead = mutation({
     return true;
   },
 });
+
+// Job-seeker focused aliases using profileId for clarity and type-safety
+export const getByProfile = query({
+  args: { profileId: v.id('profiles'), limit: v.optional(v.number()) },
+  handler: async (ctx, { profileId, limit }) => {
+    const items = await ctx.db
+      .query('notifications')
+      .withIndex('by_companyId', (q) => q.eq('companyId', profileId))
+      .collect();
+    const sorted = items.sort((a, b) => b.createdAt - a.createdAt);
+    return typeof limit === 'number' ? sorted.slice(0, limit) : sorted;
+  },
+});
+
+export const countUnreadByProfile = query({
+  args: { profileId: v.id('profiles') },
+  handler: async (ctx, { profileId }) => {
+    const items = await ctx.db
+      .query('notifications')
+      .withIndex('by_companyId', (q) => q.eq('companyId', profileId))
+      .collect();
+    const unread = items.filter((n) => !n.read).length;
+    return unread;
+  },
+});
+
+export const markAllAsReadByProfile = mutation({
+  args: { profileId: v.id('profiles') },
+  handler: async (ctx, { profileId }) => {
+    const items = await ctx.db
+      .query('notifications')
+      .withIndex('by_companyId', (q) => q.eq('companyId', profileId))
+      .collect();
+    await Promise.all(
+      items
+        .filter((n) => !n.read)
+        .map((n) => ctx.db.patch(n._id, { read: true })),
+    );
+    return true;
+  },
+});

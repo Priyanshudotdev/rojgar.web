@@ -2,41 +2,72 @@
 // Job Seeker Dashboard main entry point
 import { useState, useMemo, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Search, Bell, Home, Grid3X3, FileText, User, Share2 } from 'lucide-react';
+import { Search, Grid3X3, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card } from '@/components/ui/card';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import Logo from '@/components/ui/logo';
-import DashboardLayout from '@/components/DashboardLayout';
 import { DashboardHeaderSkeleton, JobCardSkeleton } from '@/components/ui/skeleton';
-import { useQuery } from 'convex/react';
 import { api } from '@/convex/_generated/api';
 import { useCachedConvexQuery } from '@/hooks/useCachedConvexQuery';
 import { useMe } from '@/components/providers/me-provider';
+import { JobSeekerHeader } from '@/components/job-seeker/header';
+import type { Id } from '@/convex/_generated/dataModel';
+import { useDebounce } from '@/lib/hooks/useDebounce';
+import { JobCard } from '@/components/ui/job-card';
+import { useToast } from '@/hooks/use-toast';
+import type { EnrichedJob } from '@/types/jobs';
 
 const filterOptions = [
-  { id: 'for-you', icon: Grid3X3, label: 'For you', active: true },
+  { id: 'for-you', icon: Grid3X3, label: 'For you' },
   { id: 'high-salary', icon: '💰', label: 'High Salary' },
   { id: 'nearby', icon: '📍', label: 'Nearby' },
   { id: 'new-jobs', icon: FileText, label: 'New Jobs' }
-];
+] as const;
 
-type ActiveJob = {
-  _id: string;
-  title: string;
-  location: { city: string; locality?: string };
-  salary: { min: number; max: number };
-  jobType: string;
-  staffNeeded: number;
-  company?: { name?: string; photoUrl?: string } | null;
-};
 
 export default function JobSeekerDashboard() {
+  const { toast } = useToast();
   const [searchQuery, setSearchQuery] = useState('');
+  const [activeFilter, setActiveFilter] = useState<(typeof filterOptions)[number]['id']>('for-you');
   const router = useRouter();
-  const { data: jobs } = useCachedConvexQuery(api.jobs.getActiveJobs, {}, { key: 'active-jobs', ttlMs: 2 * 60 * 1000 });
   const { me, loading } = useMe();
+
+  // Derive simple location parts from user profile for 'nearby'
+  const userLocation = me?.profile?.jobSeekerData?.location || '';
+  const parsed = useMemo(() => {
+    const parts = (userLocation || '')
+      .split(',')
+      .map((s: string) => s.trim())
+      .filter((s: string) => Boolean(s));
+    return { city: parts[0], locality: parts[1] } as { city?: string; locality?: string };
+  }, [userLocation]);
+
+  const debouncedQuery = useDebounce(searchQuery, 250);
+
+  const args = useMemo(() => {
+    const base: any = {
+      search: debouncedQuery || undefined,
+      filter: activeFilter,
+      profileId: activeFilter === 'for-you' ? (me?.profile?._id as Id<'profiles'>) : undefined,
+      city: activeFilter === 'nearby' ? parsed.city : undefined,
+      locality: activeFilter === 'nearby' ? parsed.locality : undefined,
+    };
+    return base;
+  }, [activeFilter, parsed.city, parsed.locality, me?.profile?._id, debouncedQuery]);
+
+  const dynamicKey = useMemo(() => {
+    return `filtered-jobs:${activeFilter}:${args.city ?? ''}:${args.locality ?? ''}:${args.profileId ?? ''}:${debouncedQuery}`;
+  }, [activeFilter, args.city, args.locality, args.profileId, debouncedQuery]);
+
+  const hasLocation = Boolean(parsed.city);
+  const ready = !(
+    (activeFilter === 'for-you' && !me?.profile?._id) ||
+    (activeFilter === 'nearby' && !hasLocation)
+  );
+  const { data: jobs } = useCachedConvexQuery(
+    ready ? api.jobs.getFilteredJobs : (null as any),
+    ready ? (args as any) : ('skip' as any),
+    { key: dynamicKey, ttlMs: 15 * 1000 }
+  );
 
   // Unauthenticated minimal fallback (middleware should handle this; guard just in case)
   useEffect(() => {
@@ -45,17 +76,24 @@ export default function JobSeekerDashboard() {
     }
   }, [loading, me, router]);
 
-  const filtered = useMemo(() => {
-    const list = (jobs ?? []) as ActiveJob[];
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return list;
-    return list.filter(
-      (j) =>
-        j.title.toLowerCase().includes(q) ||
-        j.location.city.toLowerCase().includes(q) ||
-        (j.company?.name?.toLowerCase().includes(q) ?? false),
-    );
-  }, [jobs, searchQuery]);
+  const filtered = (jobs ?? []) as EnrichedJob[];
+
+  const handleShare = async (job: EnrichedJob) => {
+    try {
+      const url = `${window.location.origin}/job/${job._id}`;
+      if (navigator.share) {
+        await navigator.share({ title: job.title, url });
+      } else {
+        await navigator.clipboard.writeText(url);
+        toast({ title: 'Link copied to clipboard' });
+      }
+    } catch (e) {
+      try {
+        alert('Unable to share. Please copy the link manually.');
+      } catch {}
+      toast({ title: 'Share failed', description: 'Unable to share the job link right now.' });
+    }
+  };
 
   // Avoid rendering content during redirect when unauthenticated
   if (!loading && !me) return null;
@@ -66,28 +104,13 @@ export default function JobSeekerDashboard() {
       {loading ? (
         <DashboardHeaderSkeleton />
       ) : (
-  <header className="bg-white px-4 py-3 border-b sticky top-0 z-10">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <Avatar className="w-10 h-10">
-                <AvatarImage src={me?.profile?.jobSeekerData?.profilePhotoUrl || ''} />
-                <AvatarFallback>
-                  {(me?.profile?.name || 'JS')
-                    .split(' ')
-                    .map((n: string) => n[0])
-                    .join('')
-                    .toUpperCase()
-                    .slice(0, 2)}
-                </AvatarFallback>
-              </Avatar>
-              <div>
-                <h1 className="font-semibold text-black">{me?.profile?.name || 'Job Seeker'}</h1>
-                <p className="text-sm text-gray-600">{me?.profile?.jobSeekerData?.jobRole || 'Find jobs'} ▼</p>
-              </div>
-            </div>
-            <Bell className="w-6 h-6 text-gray-600" />
-          </div>
-        </header>
+        <JobSeekerHeader
+          loading={loading}
+          name={me?.profile?.name ?? null}
+          jobRole={me?.profile?.jobSeekerData?.jobRole ?? null}
+          photoUrl={me?.profile?.jobSeekerData?.profilePhotoUrl ?? null}
+          profileId={(me?.profile?._id as Id<'profiles'>) ?? null}
+        />
       )}
 
       {/* Search Bar */}
@@ -105,79 +128,60 @@ export default function JobSeekerDashboard() {
 
       {/* Filter Options */}
       <div className="px-4 pb-2 bg-white">
-        <div className="flex space-x-3 overflow-x-auto scrollbar-hide">
-          {filterOptions.map((filter) => (
-            <button
-              key={filter.id}
-              className={`flex flex-col items-center space-y-1 min-w-max px-3 py-2 rounded-lg transition-colors duration-150 font-medium text-xs focus:outline-none focus:ring-2 focus:ring-green-500 ${
-                filter.active ? 'bg-green-100 text-green-600' : 'text-gray-600 bg-gray-50 hover:bg-green-50'
-              }`}
-            >
-              {typeof filter.icon === 'string' ? (
-                <span className="text-xl">{filter.icon}</span>
-              ) : (
-                <filter.icon className="w-5 h-5" />
-              )}
-              <span>{filter.label}</span>
-            </button>
-          ))}
+        <div className="flex gap-3 overflow-x-auto scrollbar-hide">
+          {filterOptions.map((filter) => {
+            const isActive = activeFilter === filter.id;
+            const isNearby = filter.id === 'nearby';
+            const disabled = isNearby && !hasLocation;
+            return (
+              <button
+                key={filter.id}
+                type="button"
+                aria-pressed={isActive}
+                aria-disabled={disabled}
+                onClick={() => {
+                  if (disabled) return;
+                  setActiveFilter(filter.id);
+                }}
+                title={disabled ? 'Set your location in profile to use Nearby' : undefined}
+                className={`flex flex-col items-center gap-1 min-w-max px-3 py-2 rounded-lg transition-colors duration-150 font-medium text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-green-600 focus-visible:ring-offset-2 ${
+                  disabled
+                    ? 'opacity-50 cursor-not-allowed bg-gray-100 text-gray-400'
+                    : isActive
+                      ? 'bg-green-100 text-green-700'
+                      : 'text-gray-700 bg-gray-50 hover:bg-green-50'
+                }`}
+             >
+                {typeof filter.icon === 'string' ? (
+                  <span className="text-xl">{filter.icon}</span>
+                ) : (
+                  <filter.icon className="w-5 h-5" />
+                )}
+                <span>{filter.label}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
       {/* Job Cards Section */}
-      <main className="flex-1 px-4 pb-24 pt-2 overflow-y-auto bg-white">
+      <section className="flex-1 px-4 pb-24 pt-2 overflow-y-auto bg-white">
         <div className="space-y-4">
           {loading || jobs === undefined
             ? Array.from({ length: 3 }).map((_, i) => <JobCardSkeleton key={i} />)
             : filtered.map((job) => (
-                <Card key={job._id} className="p-4 bg-white rounded-xl border border-gray-100">
-                  <div className="flex justify-between items-start mb-3">
-                    <div className="flex items-center space-x-3">
-                      <div className="w-10 h-10 bg-gray-200 rounded-lg flex items-center justify-center overflow-hidden">
-                          {job.company?.photoUrl ? (
-                            <Avatar className="w-full h-full rounded-lg">
-                              <AvatarImage src={job.company.photoUrl as string} />
-                              <AvatarFallback>
-                                {(job.company?.name || 'E')
-                                  .split(' ')
-                                  .map((n: string) => n[0])
-                                  .join('')
-                                  .toUpperCase()
-                                  .slice(0, 2)}
-                              </AvatarFallback>
-                            </Avatar>
-                        ) : (
-                            <Logo size={40} alt="Employeer Logo" className="rounded-full" />
-                        )}
-                      </div>
-                      <div>
-                        <h3 className="font-semibold text-black text-base">{job.title}</h3>
-                        <p className="text-xs text-gray-600">🏢 {job.company?.name ?? 'Employeer'}</p>
-                      </div>
-                    </div>
-                    <button aria-label="Share job">
-                      <Share2 className="w-5 h-5 text-gray-400" />
-                    </button>
-                  </div>
-                  <div className="space-y-1 mb-4 text-gray-600 text-xs">
-                    <p>📍 {job.location.city}{job.location.locality ? `, ${job.location.locality}` : ''}</p>
-                    <p>{job.staffNeeded} Openings • {job.jobType}</p>
-                  </div>
-                  <div className="flex space-x-2">
-                    <Button className="flex-1 bg-green-600 hover:bg-green-700 text-white text-sm" onClick={() => router.push(`/job/${job._id}`)}>
-                      📞 Call HR
-                    </Button>
-                    <button className="p-2 border border-gray-200 rounded bg-white" aria-label="Share job">
-                      <Share2 className="w-4 h-4 text-gray-600" />
-                    </button>
-                  </div>
-                </Card>
+                <JobCard
+                  key={job._id}
+                  job={job}
+                  onDetailsClick={() => router.push(`/job/${job._id}`)}
+                  onShare={() => handleShare(job)}
+                />
               ))}
           {!loading && jobs && filtered.length === 0 && (
             <p className="text-sm text-gray-600">No jobs found.</p>
           )}
         </div>
-      </main>
+      </section>
       </main>
   );
 }

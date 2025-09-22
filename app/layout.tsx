@@ -1,3 +1,4 @@
+import { cookies } from 'next/headers';
 import ConvexClientProvider from '@/components/ConvexClientProvider';
 import './globals.css';
 import '@uploadthing/react/styles.css';
@@ -22,6 +23,8 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  const token = cookies().get('sessionToken')?.value;
+
   return (
     <html lang="en">
       <body

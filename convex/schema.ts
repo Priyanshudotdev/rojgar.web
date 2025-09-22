@@ -85,7 +85,11 @@ export default defineSchema({
     description: v.string(),
     status: JobStatusEnum,
     createdAt: v.number(),
-  }).index('by_companyId', ['companyId']),
+  })
+    .index('by_companyId', ['companyId'])
+    .index('by_status_createdAt', ['status', 'createdAt'])
+    .index('by_createdAt', ['createdAt'])
+    .index('by_status_salary', ['status', 'salary.max']),
 
   applications: defineTable({
     jobId: v.id('jobs'),

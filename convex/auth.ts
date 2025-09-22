@@ -3,6 +3,8 @@ import { api } from './_generated/api';
 import { v } from 'convex/values';
 import bcrypt from 'bcryptjs';
 import { deriveUserRole } from '../lib/auth/redirect';
+import { normalizePhoneNumber } from '../lib/utils/phone';
+import { AuthError } from '../lib/utils/errors';
 
 // Helpers compatible with Convex runtime (no Node Buffer)
 const base64Encode = (str: string) => {
@@ -33,12 +35,39 @@ const base64Encode = (str: string) => {
   return output;
 };
 
+// Mask phone for logs: keep country and last 2-4 digits
+function maskPhone(input: string | undefined): string {
+  if (!input) return 'unknown';
+  const s = String(input);
+  const digits = s.replace(/\D/g, '');
+  if (s.startsWith('+91') && digits.length >= 12) {
+    const tail = digits.slice(-4);
+    return `+91******${tail}`;
+  }
+  const tail = digits.slice(-2);
+  return `****${tail}`;
+}
+
 // We use actions for Twilio network calls
 export const requestOtp = action({
   args: { phone: v.string(), purpose: v.optional(v.string()) },
   handler: async (ctx, { phone, purpose }) => {
-    // Normalize Indian numbers: ensure +91
-    const normalized = phone.startsWith('+') ? phone : `+91${phone}`;
+    // Normalize to canonical +91XXXXXXXXXX
+    let normalized: string;
+    try {
+      normalized = normalizePhoneNumber(phone);
+    } catch (e: any) {
+      console.warn('[auth.requestOtp] Invalid phone normalization', {
+        phoneMasked: maskPhone(phone),
+      });
+      throw new AuthError(
+        'INVALID_PHONE',
+        '[CODE: INVALID_PHONE] Invalid phone number',
+        {
+          category: 'auth',
+        },
+      );
+    }
 
     // Generate a 6-digit OTP
     const code = Math.floor(100000 + Math.random() * 900000).toString();
@@ -63,9 +92,18 @@ export const requestOtp = action({
     const token = process.env.TWILIO_AUTH_TOKEN;
     const from = process.env.TWILIO_FROM_NUMBER;
     if (!sid || !token || !from) {
-      // In dev, log and return the code so the frontend can display it temporarily.
-      console.log(`[DEV OTP] ${normalized}: ${code}`);
-      return { ok: true, dev: true, debugCode: code } as const;
+      if (process.env.NODE_ENV !== 'production') {
+        // In dev, log and return the code so the frontend can display it temporarily.
+        console.log(`[DEV OTP] ${normalized}: ${code}`);
+        return { ok: true, dev: true, debugCode: code } as const;
+      } else {
+        // In prod, do not leak codes
+        throw new AuthError(
+          'SERVER_ERROR',
+          '[CODE: SERVER_ERROR] OTP service unavailable',
+          { category: 'server' },
+        );
+      }
     }
 
     const body = new URLSearchParams({
@@ -87,8 +125,23 @@ export const requestOtp = action({
     );
     if (!res.ok) {
       const t = await res.text();
-      throw new Error(`Twilio error: ${res.status} ${t}`);
+      console.error('[auth.requestOtp] Twilio error', {
+        status: res.status,
+        body: t ? t.slice(0, 200) : '',
+      });
+      throw new AuthError(
+        'SERVER_ERROR',
+        '[CODE: SERVER_ERROR] Failed to send OTP',
+        {
+          category: 'server',
+          status: res.status,
+        },
+      );
     }
+    console.info('[auth.requestOtp] OTP requested', {
+      phoneMasked: maskPhone(normalized),
+      purpose: purpose || null,
+    });
     return { ok: true } as const;
   },
 });
@@ -111,19 +164,68 @@ export const verifyOtp = action({
     role?: 'job-seeker' | 'company';
     newlyCreated?: boolean;
   }> => {
-    const normalized = phone.startsWith('+') ? phone : `+91${phone}`;
+    let normalized: string;
+    try {
+      normalized = normalizePhoneNumber(phone);
+    } catch (e: any) {
+      console.warn('[auth.verifyOtp] Invalid phone normalization', {
+        phoneMasked: maskPhone(phone),
+      });
+      throw new AuthError(
+        'INVALID_PHONE',
+        '[CODE: INVALID_PHONE] Invalid phone number',
+        {
+          category: 'auth',
+        },
+      );
+    }
     const rec = (await ctx.runQuery(api.otp.latestOtpByPhone, {
       phone: normalized,
     })) as any;
-    if (!rec) throw new Error('No OTP found');
-    if (rec.consumed) throw new Error('OTP already used');
-    if (Date.now() > rec.expiresAt) throw new Error('OTP expired');
-    if (rec.attempts >= 5) throw new Error('Too many attempts');
+    if (!rec) {
+      console.warn('[auth.verifyOtp] OTP not found', {
+        phoneMasked: maskPhone(normalized),
+      });
+      throw new AuthError('NOT_FOUND', '[CODE: NOT_FOUND] No OTP found', {
+        category: 'auth',
+      });
+    }
+    if (rec.consumed) {
+      console.warn('[auth.verifyOtp] OTP already consumed', { otpId: rec._id });
+      throw new AuthError('FORBIDDEN', '[CODE: FORBIDDEN] OTP already used', {
+        category: 'auth',
+      });
+    }
+    if (Date.now() > rec.expiresAt) {
+      console.warn('[auth.verifyOtp] OTP expired', {
+        otpId: rec._id,
+        expiresAt: rec.expiresAt,
+      });
+      throw new AuthError(
+        'SESSION_EXPIRED',
+        '[CODE: SESSION_EXPIRED] OTP expired',
+        {
+          category: 'session',
+        },
+      );
+    }
+    if (rec.attempts >= 5) {
+      console.warn('[auth.verifyOtp] Too many attempts', {
+        otpId: rec._id,
+        attempts: rec.attempts,
+      });
+      throw new AuthError('FORBIDDEN', '[CODE: FORBIDDEN] Too many attempts', {
+        category: 'auth',
+      });
+    }
 
     const isValid = await bcrypt.compare(code, rec.codeHash);
     if (!isValid) {
       await ctx.runMutation(api.otp.incrementOtpAttempts, { otpId: rec._id });
-      throw new Error('Invalid code');
+      console.warn('[auth.verifyOtp] Invalid code', { otpId: rec._id });
+      throw new AuthError('FORBIDDEN', '[CODE: FORBIDDEN] Invalid code', {
+        category: 'auth',
+      });
     }
 
     if (role && onboardingData) {
@@ -140,11 +242,16 @@ export const verifyOtp = action({
         )) as any;
         const prof = profileResult?.profile;
         const derivedRole = deriveUserRole(prof, existingUser);
-        return {
+        const result = {
           userId: existingUser._id,
           exists: true,
           ...(derivedRole ? { role: derivedRole } : {}),
         } as const;
+        console.info('[auth.verifyOtp] Existing user OTP verified', {
+          userId: existingUser._id,
+          role: result.role || null,
+        });
+        return result;
       }
       const result = (await ctx.runMutation(api.otp.consumeOtpAndUpsertUser, {
         otpId: rec._id,
@@ -152,6 +259,10 @@ export const verifyOtp = action({
         role,
         onboardingData,
       })) as { userId: string };
+      console.info('[auth.verifyOtp] New user created via OTP', {
+        userId: result.userId,
+        role: role || null,
+      });
       return { userId: result.userId, exists: true, role, newlyCreated: true };
     } else {
       await ctx.runMutation(api.otp.consumeOtp, { otpId: rec._id });
@@ -167,11 +278,16 @@ export const verifyOtp = action({
         )) as any;
         const prof = profileResult?.profile;
         const derivedRole = deriveUserRole(prof, existingUser);
-        return {
+        const result = {
           userId: existingUser._id,
           exists: true,
           ...(derivedRole ? { role: derivedRole } : {}),
         } as const;
+        console.info(
+          '[auth.verifyOtp] Existing user verified (no onboarding)',
+          { userId: existingUser._id, role: result.role || null },
+        );
+        return result;
       }
       return { exists: false };
     }
@@ -185,16 +301,39 @@ export const checkUserExists = action({
     ctx,
     { phone },
   ): Promise<{ exists: boolean; role?: 'job-seeker' | 'company' }> => {
-    const normalized = phone.startsWith('+') ? phone : `+91${phone}`;
+    let normalized: string;
+    try {
+      normalized = normalizePhoneNumber(phone);
+    } catch (e: any) {
+      console.warn('[auth.checkUserExists] Invalid phone normalization', {
+        phoneMasked: maskPhone(phone),
+      });
+      throw new AuthError(
+        'INVALID_PHONE',
+        '[CODE: INVALID_PHONE] Invalid phone number',
+        {
+          category: 'auth',
+        },
+      );
+    }
     const user = (await ctx.runQuery(api.users.getUserByPhone, {
       phone: normalized,
     })) as any;
-    if (!user) return { exists: false };
+    if (!user) {
+      console.info('[auth.checkUserExists] No user for phone', {
+        phoneMasked: maskPhone(normalized),
+      });
+      return { exists: false };
+    }
     const profResult = (await ctx.runQuery(api.profiles.getProfileByUserId, {
       userId: user._id,
     })) as any;
     const prof = profResult?.profile;
     const derivedRole = deriveUserRole(prof, user) ?? undefined;
+    console.info('[auth.checkUserExists] User found', {
+      userId: user._id,
+      role: derivedRole || null,
+    });
     return { exists: true, role: derivedRole };
   },
 });
@@ -214,17 +353,70 @@ export const setPassword = action({
 export const createSession = mutation({
   args: { userId: v.id('users') },
   handler: async (ctx, { userId }) => {
-    const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    // Validate user exists
+    const user = await ctx.db.get(userId);
+    if (!user)
+      throw new AuthError(
+        'SERVER_ERROR',
+        '[CODE: SERVER_ERROR] User not found',
+        { category: 'server' },
+      );
+    // Crypto-strong token generator (64-hex string)
+    function generateTokenHex(len = 32) {
+      const cryptoObj: any = (globalThis as any).crypto;
+      if (!cryptoObj || typeof cryptoObj.getRandomValues !== 'function') {
+        throw new AuthError(
+          'SERVER_ERROR',
+          '[CODE: SERVER_ERROR] Crypto API not available',
+          { category: 'server' },
+        );
+      }
+      const bytes = new Uint8Array(len);
+      cryptoObj.getRandomValues(bytes);
+      return Array.from(bytes)
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    }
+
     const now = Date.now();
     const expiresAt = now + 1000 * 60 * 60 * 24 * 30; // 30 days
-    await ctx.db.insert('sessions', {
+
+    let lastErr: any = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const token = generateTokenHex(32); // 64 hex chars
+      try {
+        await ctx.db.insert('sessions', {
+          userId,
+          token,
+          createdAt: now,
+          expiresAt,
+          revoked: false,
+        });
+        console.info('[auth.createSession] Session created', {
+          userId,
+          exp: expiresAt,
+          attempt,
+        });
+        return { token, expiresAt };
+      } catch (e: any) {
+        lastErr = e;
+        console.warn('[auth.createSession] Insert failed, retrying', {
+          attempt,
+          err: e?.message || e,
+        });
+        // Retry on insert error (possible unique conflict), up to 5 attempts
+      }
+    }
+    console.error('[auth.createSession] Failed after retries', {
       userId,
-      token,
-      createdAt: now,
-      expiresAt,
-      revoked: false,
+      exp: expiresAt,
+      err: lastErr?.message || lastErr,
     });
-    return { token, expiresAt };
+    throw new AuthError(
+      'SESSION_CREATE_FAILED',
+      '[CODE: SESSION_CREATE_FAILED] Failed to create session',
+      { category: 'session' },
+    );
   },
 });
 
@@ -240,23 +432,69 @@ export const verifyPassword = action({
     role?: 'company' | 'job-seeker';
     userId: string;
   }> => {
-    const normalized = phone.startsWith('+') ? phone : `+91${phone}`;
+    let normalized: string;
+    try {
+      normalized = normalizePhoneNumber(phone);
+    } catch (e: any) {
+      console.warn('[auth.verifyPassword] Invalid phone normalization', {
+        phoneMasked: maskPhone(phone),
+      });
+      throw new AuthError(
+        'INVALID_PHONE',
+        '[CODE: INVALID_PHONE] Invalid phone number',
+        {
+          category: 'auth',
+        },
+      );
+    }
     const user = (await ctx.runQuery(api.users.getUserByPhone, {
       phone: normalized,
     })) as any;
-    if (!user || !user.passwordHash) throw new Error('Invalid credentials');
+    if (!user || !user.passwordHash) {
+      console.warn(
+        '[auth.verifyPassword] User not found or missing passwordHash',
+      );
+      throw new AuthError(
+        'USER_NOT_FOUND',
+        '[CODE: USER_NOT_FOUND] Invalid credentials',
+        {
+          category: 'auth',
+        },
+      );
+    }
     const ok = await bcrypt.compare(password, user.passwordHash);
-    if (!ok) throw new Error('Invalid credentials');
-    // derive role from profile
-    const profResult = (await ctx.runQuery(api.profiles.getProfileByUserId, {
-      userId: user._id,
-    })) as any;
-    const prof = profResult?.profile;
-    const derivedRole = deriveUserRole(prof, user);
+    if (!ok) {
+      console.warn('[auth.verifyPassword] Invalid password');
+      throw new AuthError(
+        'INVALID_PASSWORD',
+        '[CODE: INVALID_PASSWORD] Invalid credentials',
+        {
+          category: 'auth',
+        },
+      );
+    }
+    // derive role from profile (harden with try/catch)
+    let derivedRole: 'company' | 'job-seeker' | undefined = undefined;
+    try {
+      const profResult = (await ctx.runQuery(api.profiles.getProfileByUserId, {
+        userId: user._id,
+      })) as any;
+      const prof = profResult?.profile;
+      derivedRole = deriveUserRole(prof, user) ?? undefined;
+    } catch (e: any) {
+      console.warn(
+        '[auth.verifyPassword] Failed to fetch profile for role derivation',
+        e?.message || e,
+      );
+      derivedRole = undefined;
+    }
     // create session
     const session = (await ctx.runMutation(api.auth.createSession, {
       userId: user._id,
     })) as { token: string; expiresAt: number };
+    console.info('[auth.verifyPassword] Authentication successful', {
+      userId: user._id,
+    });
     return {
       token: session.token,
       expiresAt: session.expiresAt,
@@ -273,9 +511,27 @@ export const getUserBySession = query({
       .query('sessions')
       .withIndex('by_token', (q) => q.eq('token', token))
       .unique();
-    if (!session || session.revoked || Date.now() > session.expiresAt)
+    if (!session) return null;
+    if (session.revoked) {
+      console.warn('[auth.getUserBySession] Session revoked', {
+        tokenLen: token.length,
+      });
       return null;
+    }
+    if (Date.now() > session.expiresAt) {
+      console.warn('[auth.getUserBySession] Session expired', {
+        tokenLen: token.length,
+        exp: session.expiresAt,
+      });
+      return null;
+    }
     const user = await ctx.db.get(session.userId);
+    if (!user) {
+      console.warn('[auth.getUserBySession] User not found for session', {
+        userId: session.userId,
+      });
+      return null;
+    }
     return user;
   },
 });

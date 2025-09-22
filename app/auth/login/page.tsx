@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import Logo from '@/components/ui/logo';
 import TopNav from '@/components/ui/top-nav';
 import { useSessionAuthedRedirect } from '@/hooks/useSessionAuthedRedirect';
+import { normalizePhoneNumber, validatePhoneNumber } from '@/lib/utils/phone';
 
 export default function LoginPhonePage() {
   const [phone, setPhone] = useState('');
@@ -38,11 +39,17 @@ export default function LoginPhonePage() {
   }, [authed, redirectTo, checking, router]);
 
   const validate = (value: string) => {
+    // Keep UI to 10-digit entry but drive error via shared validator
     const cleaned = value.replace(/\D/g, '');
     setPhone(cleaned);
     if (!cleaned) return setError('');
-    if (cleaned.length !== 10) return setError('Phone must be 10 digits');
-    if (!/^[6-9]\d{9}$/.test(cleaned)) return setError('Invalid Indian mobile number');
+    // Build a temporary dial-string for validator: assume +91 for 10-digit input
+    const candidate = cleaned.length === 10 ? `+91${cleaned}` : cleaned;
+    if (!validatePhoneNumber(candidate)) {
+      // Mirror previous UX messages
+      if (cleaned.length !== 10) return setError('Phone must be 10 digits');
+      return setError('Invalid Indian mobile number');
+    }
     setError('');
   };
 
@@ -51,13 +58,13 @@ export default function LoginPhonePage() {
     setLoading(true);
     setError("");
     try {
-      console.log("Phone Number:- ", phone)
-      const existsRes = await checkUserExists({ phone });
+      const normalized = normalizePhoneNumber(phone);
+      const existsRes = await checkUserExists({ phone: normalized });
       if (!existsRes.exists) {
         // Redirect brand new users directly to registration
         try {
           localStorage.setItem('authFlow', 'register');
-          localStorage.setItem('phoneNumber', phone);
+          localStorage.setItem('phoneNumber', normalized);
           localStorage.setItem('registerNotice', "We couldn't find an account for this mobile number. Let's create one.");
         } catch {}
         router.replace('/auth/register');
@@ -65,7 +72,7 @@ export default function LoginPhonePage() {
       }
   // Redirect to password entry page
   localStorage.setItem('authFlow', 'login');
-  localStorage.setItem('phoneNumber', phone);
+  localStorage.setItem('phoneNumber', normalized);
   localStorage.setItem('passwordMode', 'enter');
   router.push('/auth/login/password');
     } catch (e: any) {

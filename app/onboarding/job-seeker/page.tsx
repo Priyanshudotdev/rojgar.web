@@ -202,6 +202,7 @@ export default function JobSeekerOnboarding() {
       const setRes = await fetch('/api/session/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ token: session.token, expiresAt: session.expiresAt }),
       });
       if (!setRes.ok) {

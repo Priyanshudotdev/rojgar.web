@@ -1,169 +1,121 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import type { MeResponse } from '@/app/api/me/route';
 import { redirectGuard } from '@/hooks/useSessionAuthedRedirect';
+import { AuthError, buildBackoff, categorizeError, getRecoveryActions, getUserFriendlyMessage, type ErrorCode } from '@/lib/utils/errors';
 
 type Me = {
-  user: any | null;
-  profile: any | null;
+  user: MeResponse['user'] | null;
+  profile: MeResponse['profile'] | null;
 };
 
 type MeContextValue = {
-  me: Me | null;
+  me: Me | null | undefined; // undefined = loading, null = no session
   loading: boolean;
   refresh: () => Promise<void>;
   redirecting: boolean;
   error?: string | null;
+  errorCode?: string | null;
+  recovery?: { type: string; label?: string; url?: string }[];
 };
 
 const MeContext = createContext<MeContextValue | undefined>(undefined);
 
 type MeProviderProps = {
   children: React.ReactNode;
-  /** Optional server-fetched initial value to avoid duplicate client round trip */
   initial?: Me | null;
-  /** If true, use initial data as authoritative on first paint; queries will hydrate subsequently */
   skipInitialFetch?: boolean;
 };
 
-export function MeProvider({ children, initial = null, skipInitialFetch }: MeProviderProps) {
-  const [meFromApi, setMeFromApi] = useState<Me | null | undefined>(undefined); // undefined = loading
-  const [hydrated, setHydrated] = useState(false);
-  const [redirecting, setRedirecting] = useState<boolean>(redirectGuard.isInProgress());
+export function MeProvider({ children, initial = undefined, skipInitialFetch = false }: MeProviderProps) {
+  const [me, setMe] = useState<Me | null | undefined>(initial);
   const [error, setError] = useState<string | null>(null);
-
-  const sessionSettledRef = useRef(false);
-  const intervalRef = useRef<number | null>(null);
-  const timeoutRef = useRef<number | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [recovery, setRecovery] = useState<{ type: string; label?: string; url?: string }[] | undefined>(undefined);
+  const redirecting = redirectGuard.isInProgress();
   const controllerRef = useRef<AbortController | null>(null);
 
-  // Helper: call /api/me to detect session & user/profile server-side
-  const checkSessionStatus = async () => {
+  const abortOngoing = () => {
+    if (controllerRef.current) {
+      controllerRef.current.abort();
+      controllerRef.current = null;
+    }
+  };
+
+  const fetchMe = async (): Promise<{ kind: 'ok' | 'unauth' | 'error'; code?: ErrorCode }> => {
+    abortOngoing();
+    const ctrl = new AbortController();
+    controllerRef.current = ctrl;
     try {
-      // Abort previous in-flight request
-      if (controllerRef.current) {
-        try { controllerRef.current.abort(); } catch {}
-      }
-      const controller = new AbortController();
-      controllerRef.current = controller;
-      const res = await fetch('/api/me', { method: 'GET', credentials: 'same-origin', signal: controller.signal });
-      if (res.status === 401) {
-        // No session
-        setMeFromApi(null);
+      // show brief loading on manual refresh; error visibility is preserved by loading computation
+      setMe(undefined);
+      const res = await fetch('/api/me', { credentials: 'include', signal: ctrl.signal });
+      if (res.status === 401 || res.status === 204) {
+        setMe(null);
         setError(null);
-        sessionSettledRef.current = true;
-        // clear timers/interval handled elsewhere
-        return null;
+        setErrorCode(null);
+        setRecovery(undefined);
+        return { kind: 'unauth' };
       }
       if (!res.ok) {
-        const text = await res.text().catch(() => 'Unknown error');
-        throw new Error(text || 'Failed to fetch session');
+        // Try to parse structured error with code
+        let code: string | undefined;
+        try {
+          const data = await res.json();
+          code = data?.code;
+        } catch {}
+        const err = new AuthError((code as any) || 'UNKNOWN_ERROR', `Request failed (${res.status})`, { status: res.status });
+        const friendly = getUserFriendlyMessage(err);
+        setError(friendly);
+        setErrorCode(err.code);
+        setRecovery(getRecoveryActions(err));
+        setMe(undefined);
+        return { kind: 'error', code: err.code };
       }
-      const json = await res.json();
-      // Expect shape { user, profile }
-      setMeFromApi({ user: json.user ?? null, profile: json.profile ?? null });
+      const data = (await res.json()) as Partial<MeResponse> | any;
+      setMe({ user: (data as any)?.user ?? null, profile: (data as any)?.profile ?? null });
       setError(null);
-      sessionSettledRef.current = true;
-      return json;
+      setErrorCode(null);
+      setRecovery(undefined);
+      return { kind: 'ok' };
     } catch (e: any) {
-      if (e?.name === 'AbortError') return undefined;
-      // Network or other error - do not treat as logout; preserve undefined so timeout can decide
-      setError(e?.message ?? 'Network error');
-      return undefined;
+      if (e?.name === 'AbortError') return { kind: 'error' as const };
+      const ce = categorizeError(e);
+      setError(getUserFriendlyMessage(ce));
+      setErrorCode(ce.code);
+      setRecovery(getRecoveryActions(ce));
+      setMe(undefined);
+      return { kind: 'error', code: ce.code };
     }
   };
 
-  // Polling + event-driven detection
+  const refresh = async () => {
+    // Retry with exponential backoff only for network errors, based on immediate return
+    let attempt = 0;
+    for (;;) {
+      const r = await fetchMe();
+      if (r.kind !== 'error' || r.code !== 'NETWORK_ERROR' || attempt >= 2) break;
+      await new Promise((res) => setTimeout(res, buildBackoff(attempt++)));
+    }
+  };
+
   useEffect(() => {
-    let mounted = true;
-    setHydrated(true);
-
-    // Immediate check on mount
-    checkSessionStatus();
-
-    // Fallback polling: 250ms
-    intervalRef.current = window.setInterval(() => {
-      checkSessionStatus();
-    }, 250);
-
-    // Listener for immediate updates (e.g., onboarding pages dispatch this)
-    const onSessionUpdated = () => {
-      checkSessionStatus();
-    };
-    window.addEventListener('session-updated', onSessionUpdated as EventListener);
-
-    // Initial timeout to avoid infinite loading (5s)
-    timeoutRef.current = window.setTimeout(() => {
-      if (mounted && !sessionSettledRef.current && meFromApi === undefined) {
-        // mark as no session found or timed out
-        setMeFromApi(null);
-        setError((prev) => prev ?? 'Session detection timed out');
-        sessionSettledRef.current = true;
-      }
-    }, 5000);
-
+    if (!skipInitialFetch) fetchMe();
+    const onUpdate = () => fetchMe();
+    window.addEventListener('session-updated', onUpdate);
     return () => {
-      mounted = false;
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
-      if (controllerRef.current) {
-        try { controllerRef.current.abort(); } catch {}
-        controllerRef.current = null;
-      }
-      window.removeEventListener('session-updated', onSessionUpdated as EventListener);
+      window.removeEventListener('session-updated', onUpdate);
+      abortOngoing();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Stop polling once we have a settled session state
-  useEffect(() => {
-    if (meFromApi !== undefined) {
-      sessionSettledRef.current = true;
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
-      if (controllerRef.current) {
-        try { controllerRef.current.abort(); } catch {}
-        controllerRef.current = null;
-      }
-    }
-  }, [meFromApi]);
-
-  // Build me directly from /api/me result
-  const meFromQueries: Me | null | undefined = meFromApi;
-
-  // Determine loading state
-  const loading = useMemo(() => {
-    if (typeof window === 'undefined') return false;
-    if (!hydrated) return true; // initial hydration
-    if (skipInitialFetch && initial) return false;
-    // If /api/me is still fetching, show loading
-    return meFromQueries === undefined;
-  }, [hydrated, meFromQueries, skipInitialFetch, initial]);
-
-  // Prefer API result, fall back to initial prop if provided
-  const me: Me | null = (meFromQueries ?? initial ?? null) as Me | null;
-
-  // Refresh API: re-run /api/me check
-  const refresh = async () => {
-    await checkSessionStatus();
-  };
-
-  const value = useMemo<MeContextValue>(
-    () => ({ me, loading, refresh, redirecting, error }),
-    [me, loading, redirecting, error]
+  const loading = me === undefined && !error;
+  const value: MeContextValue = useMemo(
+    () => ({ me, loading, refresh, redirecting, error, errorCode, recovery }),
+    [me, loading, redirecting, error, errorCode, recovery],
   );
-
   return <MeContext.Provider value={value}>{children}</MeContext.Provider>;
 }
 

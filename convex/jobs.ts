@@ -1,5 +1,11 @@
 import { mutation, query } from './_generated/server';
 import { v } from 'convex/values';
+import type { Id } from './_generated/dataModel';
+import {
+  calculateJobRelevanceScore,
+  filterJobsBySearch,
+  sortJobsByRelevance,
+} from '../lib/shared/jobMatch';
 
 // Local enums to mirror schema definitions
 const GenderEnum = v.union(
@@ -56,7 +62,6 @@ export const createJob = mutation({
     return jobId;
   },
 });
-
 export const getJobsByCompany = query({
   args: { companyId: v.id('profiles') },
   handler: async (ctx, args) => {
@@ -68,59 +73,58 @@ export const getJobsByCompany = query({
   },
 });
 
+// Jobs with basic stats (e.g., applicant counts) for a given company
 export const getJobsWithStatsByCompany = query({
   args: { companyId: v.id('profiles') },
-  handler: async (ctx, args) => {
+  handler: async (ctx, { companyId }) => {
     const jobs = await ctx.db
       .query('jobs')
-      .withIndex('by_companyId', (q) => q.eq('companyId', args.companyId))
+      .withIndex('by_companyId', (q) => q.eq('companyId', companyId))
       .collect();
-    const jobIds = jobs.map((j) => j._id);
-    const applications = await Promise.all(
-      jobIds.map((jobId) =>
-        ctx.db
+
+    if (jobs.length === 0) return [] as Array<any>;
+
+    const withStats = await Promise.all(
+      jobs.map(async (job) => {
+        const apps = await ctx.db
           .query('applications')
-          .withIndex('by_jobId', (q) => q.eq('jobId', jobId))
-          .collect(),
-      ),
+          .withIndex('by_jobId', (q) => q.eq('jobId', job._id))
+          .collect();
+
+        return {
+          _id: job._id,
+          title: job.title ?? 'Untitled Role',
+          location: {
+            city: job.location?.city ?? 'Unknown',
+            locality: job.location?.locality ?? undefined,
+          },
+          status: (job.status as 'Active' | 'Closed') ?? 'Active',
+          applicantCount: apps.length,
+          createdAt: Number(job.createdAt ?? Date.now()),
+        };
+      }),
     );
-    const counts = new Map<string, number>();
-    applications.forEach((apps, idx) =>
-      counts.set(jobIds[idx] as unknown as string, apps.length),
-    );
-    return jobs.map((job) => ({
-      ...job,
-      applicantCount: counts.get(job._id as unknown as string) ?? 0,
-    }));
+
+    // Sort newest first for a stable, pleasant UI ordering
+    return withStats.sort((a, b) => b.createdAt - a.createdAt);
   },
 });
 
 export const getJobById = query({
   args: { jobId: v.id('jobs') },
-  handler: async (ctx, args) => {
-    const job = await ctx.db.get(args.jobId);
-    return job;
-  },
-});
-
-export const getJobWithApplicants = query({
-  args: { jobId: v.id('jobs') },
   handler: async (ctx, { jobId }) => {
     const job = await ctx.db.get(jobId);
-    if (!job) return null;
-
+    if (!job) return { job: null, applicants: [] as any[] };
     const applications = await ctx.db
       .query('applications')
       .withIndex('by_jobId', (q) => q.eq('jobId', jobId))
       .collect();
-
     const applicants = await Promise.all(
       applications.map(async (app) => {
         const profile = await ctx.db.get(app.jobSeekerId);
         return { ...app, profile };
       }),
     );
-
     return { job, applicants };
   },
 });
@@ -145,6 +149,200 @@ export const getActiveJobs = query({
       }),
     );
     return withCompany;
+  },
+});
+
+// Helper: enrich jobs with company info (memoized per request)
+async function enrichWithCompany(ctx: any, jobs: any[]) {
+  const cache = new Map<string, any>();
+  const getCompany = async (id: string) => {
+    if (cache.has(id)) return cache.get(id);
+    const c = await ctx.db.get(id as unknown as Id<'profiles'>);
+    cache.set(id, c);
+    return c;
+  };
+  return Promise.all(
+    jobs.map(async (j) => {
+      // Guard against malformed job records and fill safe defaults
+      const job = {
+        _id: j._id,
+        title: j.title ?? 'Untitled Role',
+        description: j.description ?? '',
+        location: {
+          city: j.location?.city ?? 'Unknown',
+          locality: j.location?.locality ?? undefined,
+        },
+        salary: {
+          min: Number(j.salary?.min ?? 0),
+          max: Number(j.salary?.max ?? 0),
+        },
+        jobType: j.jobType ?? 'Full-time',
+        staffNeeded: Number(j.staffNeeded ?? 1),
+        educationRequirements: Array.isArray(j.educationRequirements)
+          ? j.educationRequirements
+          : [],
+        experienceRequired: j.experienceRequired ?? '',
+        status: j.status ?? 'Active',
+        createdAt: Number(j.createdAt ?? Date.now()),
+        companyId: j.companyId,
+      };
+      const company = await getCompany(j.companyId as unknown as string);
+      return {
+        ...job,
+        company: {
+          name:
+            company?.companyData?.companyName ?? company?.name ?? 'Employeer',
+          photoUrl: company?.companyData?.companyPhotoUrl ?? '',
+        },
+      };
+    }),
+  );
+}
+
+export const getNewJobs = query({
+  args: { days: v.optional(v.number()) },
+  handler: async (ctx, { days }) => {
+    const windowMs = (days ?? 7) * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - windowMs;
+    const items = await ctx.db
+      .query('jobs')
+      .withIndex('by_status_createdAt', (q: any) => q.eq('status', 'Active'))
+      .collect();
+    const recent = items
+      .filter((j: any) => j.createdAt >= cutoff)
+      .sort((a: any, b: any) => b.createdAt - a.createdAt);
+    return enrichWithCompany(ctx, recent);
+  },
+});
+
+export const getHighSalaryJobs = query({
+  args: { percentile: v.optional(v.number()) },
+  handler: async (ctx, { percentile }) => {
+    const items = await ctx.db
+      .query('jobs')
+      .withIndex('by_status_salary', (q: any) => q.eq('status', 'Active'))
+      .collect();
+    if (items.length === 0) return [] as any[];
+    const sorted = [...items].sort((a, b) => a.salary.max - b.salary.max);
+    const p = Math.min(Math.max(percentile ?? 0.75, 0), 0.99);
+    const idx = Math.floor(sorted.length * p);
+    const threshold = sorted[idx].salary.max;
+    const filtered = items
+      .filter((j) => j.salary.max >= threshold)
+      .sort((a, b) => b.salary.max - a.salary.max);
+    return enrichWithCompany(ctx, filtered);
+  },
+});
+
+export const getNearbyJobs = query({
+  args: { city: v.string(), locality: v.optional(v.string()) },
+  handler: async (ctx, { city, locality }) => {
+    const items = await ctx.db
+      .query('jobs')
+      .withIndex('by_status_createdAt', (q: any) => q.eq('status', 'Active'))
+      .collect();
+    const norm = (s: string) => (s || '').toLowerCase();
+    const filtered = items
+      .filter((j) => {
+        const cityMatch = norm(j.location.city) === norm(city);
+        const locMatch = locality
+          ? norm(j.location.locality ?? '') === norm(locality)
+          : true;
+        return cityMatch && locMatch;
+      })
+      .sort((a: any, b: any) => b.createdAt - a.createdAt);
+    return enrichWithCompany(ctx, filtered);
+  },
+});
+
+export const getJobsForUser = query({
+  args: { profileId: v.id('profiles'), limit: v.optional(v.number()) },
+  handler: async (ctx, { profileId, limit }) => {
+    const profile = await ctx.db.get(profileId);
+    if (!profile) return [] as any[];
+    const active = await ctx.db
+      .query('jobs')
+      .withIndex('by_status_createdAt', (q: any) => q.eq('status', 'Active'))
+      .collect();
+    const scored = sortJobsByRelevance(active, profile);
+    const sliced = typeof limit === 'number' ? scored.slice(0, limit) : scored;
+    return enrichWithCompany(ctx, sliced);
+  },
+});
+
+export const getFilteredJobs = query({
+  args: {
+    search: v.optional(v.string()),
+    filter: v.optional(v.string()), // 'for-you' | 'high-salary' | 'nearby' | 'new-jobs'
+    profileId: v.optional(v.id('profiles')),
+    city: v.optional(v.string()),
+    locality: v.optional(v.string()),
+  },
+  handler: async (ctx, { search, filter, profileId, city, locality }) => {
+    let base: any[] = [];
+    const norm = (s: string) => (s || '').toLowerCase();
+    if (filter === 'new-jobs') {
+      const windowMs = 7 * 24 * 60 * 60 * 1000;
+      const cutoff = Date.now() - windowMs;
+      const items = await ctx.db
+        .query('jobs')
+        .withIndex('by_status_createdAt', (q: any) => q.eq('status', 'Active'))
+        .collect();
+      const recent = items
+        .filter((j: any) => j.createdAt >= cutoff)
+        .sort((a: any, b: any) => b.createdAt - a.createdAt);
+      base = await enrichWithCompany(ctx, recent);
+    } else if (filter === 'high-salary') {
+      const items = await ctx.db
+        .query('jobs')
+        .withIndex('by_status_salary', (q: any) => q.eq('status', 'Active'))
+        .collect();
+      if (items.length === 0) return [] as any[];
+      const sorted = [...items].sort((a, b) => a.salary.max - b.salary.max);
+      const idx = Math.floor(sorted.length * 0.75);
+      const threshold =
+        sorted[idx]?.salary.max ?? sorted[sorted.length - 1].salary.max;
+      const filtered = items
+        .filter((j: any) => j.salary.max >= threshold)
+        .sort((a: any, b: any) => b.salary.max - a.salary.max);
+      base = await enrichWithCompany(ctx, filtered);
+    } else if (filter === 'nearby' && city) {
+      const items = await ctx.db
+        .query('jobs')
+        .withIndex('by_status_createdAt', (q: any) => q.eq('status', 'Active'))
+        .collect();
+      const filtered = items
+        .filter((j: any) => {
+          const cityMatch = norm(j.location.city) === norm(city);
+          const locMatch = locality
+            ? norm(j.location.locality ?? '') === norm(locality)
+            : true;
+          return cityMatch && locMatch;
+        })
+        .sort((a: any, b: any) => b.createdAt - a.createdAt);
+      base = await enrichWithCompany(ctx, filtered);
+    } else if (filter === 'for-you' && profileId) {
+      const profile = await ctx.db.get(profileId);
+      const items = await ctx.db
+        .query('jobs')
+        .withIndex('by_status_createdAt', (q: any) => q.eq('status', 'Active'))
+        .collect();
+      const scored = sortJobsByRelevance(items, profile ?? {});
+      base = await enrichWithCompany(ctx, scored);
+    } else {
+      const items = await ctx.db
+        .query('jobs')
+        .withIndex('by_status_createdAt', (q: any) => q.eq('status', 'Active'))
+        .collect();
+      const sorted = [...items].sort(
+        (a: any, b: any) => b.createdAt - a.createdAt,
+      );
+      base = await enrichWithCompany(ctx, sorted);
+    }
+    if (search && search.trim()) {
+      base = filterJobsBySearch(search, base as any);
+    }
+    return base;
   },
 });
 
