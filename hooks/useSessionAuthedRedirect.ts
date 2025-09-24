@@ -73,7 +73,9 @@ export function useSessionAuthedRedirect(): SessionRedirectState {
     let disposeGuard: (() => void) | null = null;
 
     const currentPath = window.location.pathname;
-    const isPasswordPage = currentPath.includes('/auth/login/password') || currentPath.includes('/auth/register/password');
+    const isPasswordPage =
+      currentPath.includes('/auth/login/password') ||
+      currentPath.includes('/auth/register/password');
 
     const isOnboardingPage = currentPath.startsWith('/onboarding');
 
@@ -85,9 +87,12 @@ export function useSessionAuthedRedirect(): SessionRedirectState {
     (async () => {
       if (redirectGuard.isInProgress()) {
         if (process.env.NODE_ENV !== 'production') {
-          console.debug('[useSessionAuthedRedirect] Redirect in progress; skipping.');
+          console.debug(
+            '[useSessionAuthedRedirect] Redirect in progress; skipping.',
+          );
         }
-        if (!cancelled) setState({ authed: false, checking: false, isPasswordPage: false });
+        if (!cancelled)
+          setState({ authed: false, checking: false, isPasswordPage: false });
         return;
       }
 
@@ -111,20 +116,51 @@ export function useSessionAuthedRedirect(): SessionRedirectState {
           const user = cached?.user;
           if (user) {
             const userRole: string | undefined = user?.role ?? undefined;
-            const redirectTo = redirectToDashboard(profile, userRole) ?? undefined;
+            const redirectTo =
+              redirectToDashboard(profile, userRole) ?? undefined;
             if (redirectTo) {
               disposeGuard = redirectGuard.start();
             }
-            if (!cancelled) setState({ authed: true, redirectTo, checking: false, isPasswordPage: false });
+            if (!cancelled)
+              setState({
+                authed: true,
+                redirectTo,
+                checking: false,
+                isPasswordPage: false,
+              });
           } else {
-            if (!cancelled) setState({ authed: false, checking: false, isPasswordPage: false });
+            if (!cancelled)
+              setState({
+                authed: false,
+                checking: false,
+                isPasswordPage: false,
+              });
           }
           return;
         }
 
-        const res = await fetch('/api/me', { cache: 'no-store' });
+        const res = await fetch('/api/me', {
+          cache: 'no-store',
+          credentials: 'include',
+        });
+        // 204 indicates no active session; treat as unauthenticated and do not parse JSON
+        if (res.status === 204) {
+          if (!cancelled)
+            setState({ authed: false, checking: false, isPasswordPage: false });
+          return;
+        }
+        // Any non-2xx (except 204 handled above) is treated as unauthenticated
         if (!res.ok) {
-          if (!cancelled) setState({ authed: false, checking: false, isPasswordPage: false });
+          if (process.env.NODE_ENV !== 'production') {
+            try {
+              console.debug(
+                '[useSessionAuthedRedirect] /api/me status:',
+                res.status,
+              );
+            } catch {}
+          }
+          if (!cancelled)
+            setState({ authed: false, checking: false, isPasswordPage: false });
           return;
         }
         const data = await res.json();
@@ -132,16 +168,30 @@ export function useSessionAuthedRedirect(): SessionRedirectState {
         const user = data?.user;
         if (user) {
           const userRole: string | undefined = user?.role ?? undefined;
-          const redirectTo = redirectToDashboard(profile, userRole) ?? undefined;
+          const redirectTo =
+            redirectToDashboard(profile, userRole) ?? undefined;
           if (redirectTo) {
             disposeGuard = redirectGuard.start();
           }
-          if (!cancelled) setState({ authed: true, redirectTo, checking: false, isPasswordPage: false });
+          if (!cancelled)
+            setState({
+              authed: true,
+              redirectTo,
+              checking: false,
+              isPasswordPage: false,
+            });
         } else {
-          if (!cancelled) setState({ authed: false, checking: false, isPasswordPage: false });
+          if (!cancelled)
+            setState({ authed: false, checking: false, isPasswordPage: false });
         }
       } catch (e: any) {
-        if (!cancelled) setState({ authed: false, checking: false, error: e?.message || 'Session check failed', isPasswordPage: false });
+        if (!cancelled)
+          setState({
+            authed: false,
+            checking: false,
+            error: e?.message || 'Session check failed',
+            isPasswordPage: false,
+          });
       }
     })();
 

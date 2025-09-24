@@ -218,13 +218,8 @@ export default function CompanyOnboardingPage() {
             throw new Error(`Failed to set session: ${text}`);
           }
           localStorage.setItem('phoneNumber', formData.phone);
-          // Notify MeProvider immediately that session cookie is set (httpOnly cookie cannot be read directly)
-          try {
-            window.dispatchEvent(new CustomEvent('session-updated'));
-          } catch (e) {
-            // ignore in non-browser environments
-          }
-          // Give MeProvider a short moment to pick up the session before redirecting
+          // Notify MeProvider after success and give a brief delay for cookie propagation
+          try { window.dispatchEvent(new CustomEvent('session-updated')); } catch {}
           await new Promise((res) => setTimeout(res, 100));
           router.replace('/dashboard/company');
         } else {

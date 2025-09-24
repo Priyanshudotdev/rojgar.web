@@ -10,7 +10,7 @@ import { useMutation, useQuery } from 'convex/react';
 import { api } from '@/convex/_generated/api';
 import type { Id } from '@/convex/_generated/dataModel';
 import { useMe } from '@/components/providers/me-provider';
-import { invalidateKeys } from '@/hooks/useInvalidateCachedQuery';
+import { invalidateKeys, invalidateCachedQuery } from '@/hooks/useInvalidateCachedQuery';
 
 export default function JobDetailsPage() {
   const router = useRouter();
@@ -18,11 +18,41 @@ export default function JobDetailsPage() {
   const jobId = (params?.id as string) as Id<'jobs'>;
   const { me } = useMe();
   const companyId = me?.profile?._id as Id<'profiles'> | undefined;
-  const data = useQuery(api.jobs.getJobWithApplicants, jobId ? { jobId } : 'skip') as
-    | { job: any; applicants: any[] }
+  const data = useQuery(api.jobs.getJobById, jobId ? { jobId } : 'skip') as
+    | {
+        job: {
+          _id: Id<'jobs'>;
+          title: string;
+          location: { city: string; locality?: string };
+          status: 'Active' | 'Closed';
+          salary: { min: number; max: number };
+          jobType: string;
+          staffNeeded: number;
+          genderRequirement: string;
+          educationRequirements?: string[];
+          experienceRequired: string;
+          description: string;
+        } | null;
+        applicants: Array<{
+          _id: string;
+          jobId: Id<'jobs'>;
+          jobSeekerId: Id<'profiles'>;
+          status?: string;
+          appliedAt: number;
+          profile: {
+            _id: Id<'profiles'>;
+            name?: string;
+            jobSeekerData?: {
+              jobRole?: string;
+              experience?: string;
+            };
+          } | null;
+        }>;
+      }
     | null
     | undefined;
   const loading = data === undefined;
+  const notFound = !loading && (!data || data.job === null);
   const del = useMutation(api.jobs.deleteJob);
   const closeJob = useMutation(api.jobs.closeJob);
 
@@ -34,6 +64,8 @@ export default function JobDetailsPage() {
     const res = await del({ jobId, companyId });
     if ((res as any)?.ok) {
       invalidateKeys(['company-jobs', 'jobsByCompany']);
+      // Also invalidate this job detail cache if present
+      try { invalidateCachedQuery('jobs.getJobById', { jobId }); } catch {}
       router.replace('/dashboard/company/jobs');
     } else {
       alert('Failed to delete job');
@@ -47,6 +79,8 @@ export default function JobDetailsPage() {
     const res = await closeJob({ jobId, companyId });
     if ((res as any)?.ok) {
       invalidateKeys(['company-jobs', 'jobsByCompany']);
+      // Invalidate detail so status/applicants refresh immediately
+      try { invalidateCachedQuery('jobs.getJobById', { jobId }); } catch {}
     } else {
       alert('Failed to close job');
     }
@@ -67,15 +101,15 @@ export default function JobDetailsPage() {
       <div className="p-4 space-y-4">
         {loading ? (
           <p className="text-sm text-gray-600">Loading…</p>
-        ) : !data ? (
+        ) : notFound ? (
           <p className="text-sm text-gray-600">Job not found.</p>
         ) : (
           <>
             <Card className="bg-white cursor-pointer">
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-lg">{data.job.title}</CardTitle>
+                <CardTitle className="text-lg">{data.job!.title}</CardTitle>
                 <div className="flex gap-2">
-                  {data.job.status === 'Active' && (
+                  {data.job!.status === 'Active' && (
                     <Button variant="secondary" onClick={onClose}>Close</Button>
                   )}
                   <Button variant="outline" onClick={onEdit}>Edit</Button>
@@ -85,41 +119,41 @@ export default function JobDetailsPage() {
               <CardContent className="text-sm text-gray-700 space-y-2">
                 <p>
                   <span className="font-medium text-black">Location: </span>
-                  {data.job.location.city}
-                  {data.job.location.locality ? `, ${data.job.location.locality}` : ''}
+                  {data.job!.location.city}
+                  {data.job!.location.locality ? `, ${data.job!.location.locality}` : ''}
                 </p>
                 <p>
                   <span className="font-medium text-black">Status: </span>
-                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${data.job.status === 'Active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                    {data.job.status}
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${data.job!.status === 'Active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    {data.job!.status}
                   </span>
                 </p>
                 <p>
-                  <span className="font-medium text-black">Salary: </span>₹{data.job.salary.min} - ₹{data.job.salary.max}
+                  <span className="font-medium text-black">Salary: </span>₹{data.job!.salary.min} - ₹{data.job!.salary.max}
                 </p>
                 <p>
                   <span className="font-medium text-black">Job Type: </span>
-                  {data.job.jobType}
+                  {data.job!.jobType}
                 </p>
                 <p>
                   <span className="font-medium text-black">Staff Needed: </span>
-                  {data.job.staffNeeded}
+                  {data.job!.staffNeeded}
                 </p>
                 <p>
                   <span className="font-medium text-black">Gender Requirement: </span>
-                  {data.job.genderRequirement}
+                  {data.job!.genderRequirement}
                 </p>
                 <p>
                   <span className="font-medium text-black">Education: </span>
-                  {data.job.educationRequirements?.join(', ') || '—'}
+                  {data.job!.educationRequirements?.join(', ') || '—'}
                 </p>
                 <p>
                   <span className="font-medium text-black">Experience: </span>
-                  {data.job.experienceRequired}
+                  {data.job!.experienceRequired}
                 </p>
                 <div>
                   <span className="font-medium text-black">Description:</span>
-                  <p className="mt-1 whitespace-pre-wrap">{data.job.description}</p>
+                  <p className="mt-1 whitespace-pre-wrap">{data.job!.description}</p>
                 </div>
               </CardContent>
             </Card>

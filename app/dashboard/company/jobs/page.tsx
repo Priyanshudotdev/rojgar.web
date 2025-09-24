@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { JobCardSkeleton } from '@/components/ui/skeleton';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
-import { Search, MoreVertical, PlusCircle, ArrowLeft } from 'lucide-react';
+import { Search, MoreVertical, PlusCircle, ArrowLeft, Briefcase } from 'lucide-react';
 import { CompanyNotificationsBell } from '@/components/company/notifications-bell';
 import { CompanyTopBar } from '@/components/company/topbar';
 import { useMutation } from 'convex/react';
@@ -32,7 +32,7 @@ export default function CompanyJobsIndexPage() {
 
   const { data: jobs } = useCachedConvexQuery(
     api.jobs.getJobsWithStatsByCompany,
-    companyId ? ({ companyId } as any) : ("skip" as any),
+  companyId ? ({ companyId } as any) : 'skip',
     { key: 'company-jobs', ttlMs: 2 * 60 * 1000 }
   );
 
@@ -95,9 +95,21 @@ export default function CompanyJobsIndexPage() {
 
       <main className="px-4 pb-24 pt-2">
         <div className="space-y-4">
-          {loading || (!jobs && !companyId)
-            ? Array.from({ length: 3 }).map((_, i) => <JobCardSkeleton key={i} />)
-            : filtered.map((job: any) => (
+          {loading ? (
+            Array.from({ length: 3 }).map((_, i) => <JobCardSkeleton key={i} />)
+          ) : !companyId ? (
+            <Card className="p-6 bg-white rounded-xl border border-dashed border-gray-300 text-center">
+              <div className="flex flex-col items-center gap-3">
+                <Briefcase className="w-8 h-8 text-gray-400" />
+                <h3 className="font-semibold text-black">Complete your Employeer profile first!</h3>
+                <p className="text-sm text-gray-600">Fill in your company details to post jobs.</p>
+                <Button className="bg-green-600 hover:bg-green-700" onClick={() => router.push('/onboarding/company')}>
+                  <PlusCircle className="w-4 h-4 mr-2" /> Complete Profile
+                </Button>
+              </div>
+            </Card>
+          ) : (
+            filtered.map((job: any) => (
                 <Card onClick={() => router.push(`/dashboard/company/jobs/${job._id}`)} key={job._id} className="p-4 bg-white cursor-pointer rounded-xl border border-gray-100">
                   <div className="flex justify-between items-start mb-3">
                     <div>
@@ -127,7 +139,8 @@ export default function CompanyJobsIndexPage() {
                     <span className={`text-xs font-semibold px-2 py-1 rounded-full ${job.status === 'Active' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{job.status}</span>
                   </div>
                 </Card>
-              ))}
+              ))
+          )}
           {!loading && jobs && filtered.length === 0 && <p className="text-sm text-gray-600">No jobs found.</p>}
         </div>
       </main>

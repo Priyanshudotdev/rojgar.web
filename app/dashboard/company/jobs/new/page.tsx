@@ -36,7 +36,8 @@ export default function NewJobPage() {
 
   useEffect(() => {
     (async () => {
-      const res = await fetch('/api/me', { cache: 'no-store' });
+      const res = await fetch('/api/me', { cache: 'no-store', credentials: 'include' });
+      if (res.status === 204) return; // No active session
       if (res.ok) {
         const data = await res.json();
         if (data?.profile?._id) setCompanyId(data.profile._id as Id<'profiles'>);

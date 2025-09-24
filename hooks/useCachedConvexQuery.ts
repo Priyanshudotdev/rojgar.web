@@ -5,12 +5,16 @@ import { useQuery } from 'convex/react';
 
 // Minimal generic cache for Convex queries. Shows cached data immediately
 // and updates cache once live query resolves. TTL is optional.
-export function useCachedConvexQuery<TArgs extends object, TData = any>(
+export function useCachedConvexQuery<
+  TArgs extends object | undefined,
+  TData = any,
+>(
   queryRef: any,
-  args: TArgs,
+  args: TArgs | 'skip',
   options?: { key?: string; ttlMs?: number },
 ) {
-  const isSkipped = (args as unknown) === 'skip';
+  const isSkipped =
+    (args as unknown) === 'skip' || args === (undefined as unknown);
   const key = useMemo(() => {
     const base = options?.key ?? (queryRef?.toString?.() || 'convex-query');
     return `${base}:${JSON.stringify(args)}`;
@@ -18,7 +22,16 @@ export function useCachedConvexQuery<TArgs extends object, TData = any>(
 
   const [cached, setCached] = useState<TData | undefined>(undefined);
   const [hydrated, setHydrated] = useState(false);
-  const convexData = useQuery(queryRef, args as any) as TData | undefined;
+  let convexData: TData | undefined = undefined;
+  let error: unknown = undefined;
+  try {
+    convexData = useQuery(
+      queryRef,
+      isSkipped ? (undefined as any) : (args as any),
+    ) as TData | undefined;
+  } catch (e) {
+    error = e;
+  }
   const wroteRef = useRef(false);
 
   // Hydrate cache on mount (client only)
@@ -72,5 +85,6 @@ export function useCachedConvexQuery<TArgs extends object, TData = any>(
         : true,
     hasLive: !isSkipped && convexData !== undefined,
     cached: isSkipped ? undefined : cached,
+    error,
   } as const;
 }

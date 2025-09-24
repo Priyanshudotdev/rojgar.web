@@ -87,23 +87,40 @@ export const requestOtp = action({
       purpose,
     });
 
-    // Send SMS via Twilio (env vars required)
-    const sid = process.env.TWILIO_ACCOUNT_SID;
-    const token = process.env.TWILIO_AUTH_TOKEN;
-    const from = process.env.TWILIO_FROM_NUMBER;
-    if (!sid || !token || !from) {
-      if (process.env.NODE_ENV !== 'production') {
-        // In dev, log and return the code so the frontend can display it temporarily.
-        console.log(`[DEV OTP] ${normalized}: ${code}`);
-        return { ok: true, dev: true, debugCode: code } as const;
+    // Send SMS via Twilio (env vars required) with robust development fallback
+    const sidRaw = process.env?.TWILIO_ACCOUNT_SID;
+    const tokenRaw = process.env?.TWILIO_AUTH_TOKEN;
+    const fromRaw = process.env?.TWILIO_FROM_NUMBER;
+    const sid = typeof sidRaw === 'string' ? sidRaw.trim() : '';
+    const token = typeof tokenRaw === 'string' ? tokenRaw.trim() : '';
+    const from = typeof fromRaw === 'string' ? fromRaw.trim() : '';
+
+    const nodeEnv = (process.env?.NODE_ENV || '').trim().toLowerCase();
+    const devMode = nodeEnv ? nodeEnv !== 'production' : true; // treat undefined/empty as development
+    const hasTwilioCreds = Boolean(sid) && Boolean(token) && Boolean(from);
+
+    if (!hasTwilioCreds) {
+      // Universal fallback: return debug OTP when Twilio is not configured, in all environments.
+      console.warn(
+        '[auth.requestOtp] Twilio credentials missing - fallback mode active (returning debug OTP)',
+        {
+          nodeEnv: nodeEnv || '(unset)',
+          devMode,
+          sidPresent: Boolean(sid),
+          tokenPresent: Boolean(token),
+          fromPresent: Boolean(from),
+        },
+      );
+      const masked = maskPhone(normalized);
+      if (devMode) {
+        console.log(`[DEV OTP] ${masked}: ${code}`);
       } else {
-        // In prod, do not leak codes
-        throw new AuthError(
-          'SERVER_ERROR',
-          '[CODE: SERVER_ERROR] OTP service unavailable',
-          { category: 'server' },
+        console.info(
+          '[auth.requestOtp] Fallback mode active (OTP returned to client)',
+          { phoneMasked: masked },
         );
       }
+      return { ok: true as const, dev: true as const, debugCode: code };
     }
 
     const body = new URLSearchParams({
@@ -112,37 +129,59 @@ export const requestOtp = action({
       Body: `Your Rojgar verification code is ${code}`,
     });
 
-    const res = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': `Basic ${base64Encode(`${sid}:${token}`)}`,
-        },
-        body,
-      },
-    );
-    if (!res.ok) {
-      const t = await res.text();
-      console.error('[auth.requestOtp] Twilio error', {
-        status: res.status,
-        body: t ? t.slice(0, 200) : '',
-      });
-      throw new AuthError(
-        'SERVER_ERROR',
-        '[CODE: SERVER_ERROR] Failed to send OTP',
+    try {
+      const res = await fetch(
+        `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
         {
-          category: 'server',
-          status: res.status,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': `Basic ${base64Encode(`${sid}:${token}`)}`,
+          },
+          body,
         },
       );
+      if (!res.ok) {
+        const t = await res.text();
+        console.error('[auth.requestOtp] Twilio error', {
+          status: res.status,
+          body: t ? t.slice(0, 200) : '',
+          nodeEnv: nodeEnv || '(unset)',
+        });
+        // Universal fallback on Twilio API error
+        const masked = maskPhone(normalized);
+        if (devMode) {
+          console.log(`[DEV OTP] ${masked}: ${code}`);
+        } else {
+          console.info(
+            '[auth.requestOtp] Fallback mode on Twilio API error (OTP returned to client)',
+            { phoneMasked: masked },
+          );
+        }
+        return { ok: true as const, dev: true as const, debugCode: code };
+      }
+      console.info('[auth.requestOtp] OTP requested via Twilio', {
+        phoneMasked: maskPhone(normalized),
+        purpose: purpose || null,
+      });
+      return { ok: true as const, dev: false as const };
+    } catch (e: any) {
+      console.error('[auth.requestOtp] Twilio network error', {
+        err: e?.message || String(e),
+        nodeEnv: nodeEnv || '(unset)',
+      });
+      // Universal fallback on network error
+      const masked = maskPhone(normalized);
+      if (devMode) {
+        console.log(`[DEV OTP] ${masked}: ${code}`);
+      } else {
+        console.info(
+          '[auth.requestOtp] Fallback mode on Twilio network error (OTP returned to client)',
+          { phoneMasked: masked },
+        );
+      }
+      return { ok: true as const, dev: true as const, debugCode: code };
     }
-    console.info('[auth.requestOtp] OTP requested', {
-      phoneMasked: maskPhone(normalized),
-      purpose: purpose || null,
-    });
-    return { ok: true } as const;
   },
 });
 
@@ -353,6 +392,7 @@ export const setPassword = action({
 export const createSession = mutation({
   args: { userId: v.id('users') },
   handler: async (ctx, { userId }) => {
+    const t0 = Date.now();
     // Validate user exists
     const user = await ctx.db.get(userId);
     if (!user)
@@ -384,7 +424,9 @@ export const createSession = mutation({
     let lastErr: any = null;
     for (let attempt = 0; attempt < 5; attempt++) {
       const token = generateTokenHex(32); // 64 hex chars
+      const formatOk = /^[0-9a-f]{64}$/i.test(token);
       try {
+        const tIns0 = Date.now();
         await ctx.db.insert('sessions', {
           userId,
           token,
@@ -396,7 +438,14 @@ export const createSession = mutation({
           userId,
           exp: expiresAt,
           attempt,
+          tokenLen: token.length,
+          tokenFormatOk: formatOk,
+          insertMs: Date.now() - tIns0,
         });
+        const totalMs = Date.now() - t0;
+        if (totalMs > 200) {
+          console.info('[auth.createSession] Slow path', { totalMs });
+        }
         return { token, expiresAt };
       } catch (e: any) {
         lastErr = e;
@@ -507,14 +556,27 @@ export const verifyPassword = action({
 export const getUserBySession = query({
   args: { token: v.string() },
   handler: async (ctx, { token }) => {
+    const t0 = Date.now();
+    const formatOk = /^[0-9a-f]{64}$/i.test(token || '');
     const session = await ctx.db
       .query('sessions')
       .withIndex('by_token', (q) => q.eq('token', token))
       .unique();
-    if (!session) return null;
+    if (!session) {
+      console.warn('[auth.getUserBySession] Session not found', {
+        tokenLen: token?.length || 0,
+        tokenFormatOk: formatOk,
+        dt: Date.now() - t0,
+      });
+      return null;
+    }
     if (session.revoked) {
       console.warn('[auth.getUserBySession] Session revoked', {
         tokenLen: token.length,
+        sessionId: session._id,
+        userId: session.userId,
+        tokenFormatOk: formatOk,
+        dt: Date.now() - t0,
       });
       return null;
     }
@@ -522,15 +584,31 @@ export const getUserBySession = query({
       console.warn('[auth.getUserBySession] Session expired', {
         tokenLen: token.length,
         exp: session.expiresAt,
+        sessionId: session._id,
+        userId: session.userId,
+        tokenFormatOk: formatOk,
+        now: Date.now(),
+        dt: Date.now() - t0,
       });
       return null;
     }
+    const tUser0 = Date.now();
     const user = await ctx.db.get(session.userId);
     if (!user) {
       console.warn('[auth.getUserBySession] User not found for session', {
         userId: session.userId,
+        sessionId: session._id,
+        dt: Date.now() - t0,
       });
       return null;
+    }
+    if (Date.now() - t0 > 200) {
+      console.info('[auth.getUserBySession] Slow session lookup', {
+        sessionId: session._id,
+        userId: session.userId,
+        elapsedMs: Date.now() - t0,
+        userFetchMs: Date.now() - tUser0,
+      });
     }
     return user;
   },

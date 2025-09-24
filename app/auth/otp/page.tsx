@@ -5,18 +5,26 @@ import { useRouter } from 'next/navigation';
 import { Diamond, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
 import Logo from '@/components/ui/logo';
 import { useAction, useMutation } from 'convex/react';
 import { api } from '@/convex/_generated/api';
 import TopNav from '@/components/ui/top-nav';
 import { getDashboardPathByRole } from '@/lib/auth/clientRedirect';
 import { toast } from '@/hooks/use-toast';
+import { OtpErrorAlert } from '@/components/ui/otp-error-alert';
+import { mapErrorToFormField, showOtpErrorToast, withRetry, getServiceStatus, getDebugOtp, storeDebugOtp, createAutoFillHandler, isFakeOtpResponse } from '@/lib/utils/otp-error-handler';
+import { FakeOtpDisplay } from '@/components/ui/fake-otp-display';
+import { categorizeError, getUserFriendlyMessage } from '@/lib/utils/errors';
+import { getAvailableAlternatives, describeAlternative } from '@/lib/utils/alternative-verification';
 
 export default function OTPVerification() {
   const [otp, setOTP] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [error, setError] = useState('');
   const [debugOtp, setDebugOtp] = useState<string | null>(null);
+  const [serviceDown, setServiceDown] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const verifyOtp = useAction(api.auth.verifyOtp);
   const requestOtp = useAction(api.auth.requestOtp);
   const createSession = useMutation(api.auth.createSession);
@@ -26,7 +34,7 @@ export default function OTPVerification() {
     const phone = localStorage.getItem('phoneNumber');
     if (phone) setPhoneNumber(phone);
     try {
-      const dbg = localStorage.getItem('debugOtp');
+      const dbg = getDebugOtp();
       if (dbg) setDebugOtp(dbg);
     } catch {}
     return () => {
@@ -49,12 +57,22 @@ export default function OTPVerification() {
     if (resending || cooldown > 0) return;
     setError('');
     setResending(true);
+    setServiceDown(false);
     try {
       const flow = (localStorage.getItem('authFlow') || 'login') as 'login' | 'register';
-      await requestOtp({ phone: phoneNumber, purpose: flow });
+      const res = await withRetry(() => requestOtp({ phone: phoneNumber, purpose: flow }), 3);
+      if (isFakeOtpResponse(res)) {
+        setDebugOtp((res as any).debugCode);
+        storeDebugOtp((res as any).debugCode);
+      }
+      setServiceDown(false);
       setCooldown(30);
     } catch (e: any) {
-      setError(e.message || 'Failed to resend OTP');
+      const field = mapErrorToFormField(e);
+      if (field) setError(getUserFriendlyMessage(categorizeError(e)));
+      const status = getServiceStatus(e);
+      setServiceDown(Boolean(status?.unavailable));
+      showOtpErrorToast(e, { onRetry: handleResend });
     } finally {
       setResending(false);
     }
@@ -71,12 +89,13 @@ export default function OTPVerification() {
     try {
       setError('');
       setVerifying(true);
+      setServiceDown(false);
 
       const onboardingData = JSON.parse(localStorage.getItem('onboardingData') || 'null');
       const roleFromStorage = localStorage.getItem('userRole') as 'job-seeker' | 'company' | null;
       const role = roleFromStorage ?? undefined;
 
-      const result = await verifyOtp({ phone: phoneNumber, code: otp, role, onboardingData });
+  const result = await withRetry(() => verifyOtp({ phone: phoneNumber, code: otp, role, onboardingData }), 3);
 
       if (result.userId) {
         localStorage.setItem('verifiedUserId', result.userId as unknown as string);
@@ -90,7 +109,11 @@ export default function OTPVerification() {
         setError('Failed to verify OTP. Please try again.');
       }
     } catch (e: any) {
-      setError(e.message || 'Invalid or expired OTP');
+      const field = mapErrorToFormField(e);
+      if (field) setError(getUserFriendlyMessage(categorizeError(e)));
+      const status = getServiceStatus(e);
+      setServiceDown(Boolean(status?.unavailable));
+      showOtpErrorToast(e, { onRetry: handleVerify });
     } finally {
       setVerifying(false);
     }
@@ -113,27 +136,18 @@ export default function OTPVerification() {
         </div>
 
         <div className="mb-8 space-y-4">
-          <Input
-            type="text"
-            placeholder="Enter 6-digit OTP"
-            value={otp}
-            onChange={(e) => setOTP(e.target.value.slice(0, 6))}
-            className="w-full bg-white/10 border border-white/20 text-white placeholder:text-white/60 focus:border-white text-center text-xl tracking-widest"
-            maxLength={6}
-          />
+          <InputOTP maxLength={6} value={otp} onChange={(val) => { setOTP((val || '').slice(0, 6)); setServiceDown(false); setError(''); }}>
+            <InputOTPGroup>
+              {Array.from({ length: 6 }).map((_, i) => (
+                <InputOTPSlot key={i} index={i} className="bg-white/10 border border-white/20 text-white" />
+              ))}
+            </InputOTPGroup>
+          </InputOTP>
           {debugOtp && (
-            <div className="bg-amber-500/10 border border-amber-400/40 rounded-md p-3 text-sm text-amber-200">
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-medium">Test OTP (dev only)</span>
-                <button
-                  type="button"
-                  onClick={() => { navigator.clipboard.writeText(debugOtp); }}
-                  className="text-xs underline"
-                >Copy</button>
-              </div>
-              <code className="font-mono text-lg tracking-widest">{debugOtp}</code>
-              <p className="text-[11px] mt-1 opacity-70">Do not expose in production. This block will be removed later.</p>
-            </div>
+            <FakeOtpDisplay
+              code={debugOtp}
+              onAutofill={createAutoFillHandler((val) => setOTP(val))}
+            />
           )}
         </div>
 
@@ -158,6 +172,17 @@ export default function OTPVerification() {
             {cooldown > 0 ? `Resend in ${cooldown}s` : resending ? 'Sending...' : 'Resend OTP'}
           </Button>
           {error && <p className="text-red-400 text-sm mt-2">{error}</p>}
+          {serviceDown && (
+            <div className="mt-4">
+              <OtpErrorAlert
+                onRetry={handleResend}
+                onDismiss={() => setServiceDown(false)}
+                alternatives={getAvailableAlternatives()
+                  .filter((m) => m !== 'sms')
+                  .map((m) => ({ label: describeAlternative(m), onClick: () => {} }))}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>

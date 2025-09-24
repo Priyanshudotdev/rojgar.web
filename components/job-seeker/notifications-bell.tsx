@@ -17,12 +17,12 @@ export function JobSeekerNotificationsBell({ profileId }: { profileId: Id<'profi
   const [open, setOpen] = useState(false);
   const { data: unreadCount } = useCachedConvexQuery(
     api.notifications.countUnreadByProfile,
-    profileId ? { profileId } : ("skip" as any),
+  profileId ? { profileId } : 'skip',
     { key: 'js-notifications-unread', ttlMs: 15 * 1000 }
   );
   const { data: notifications } = useCachedConvexQuery(
     api.notifications.getByProfile,
-    profileId ? { profileId, limit: 20 } : ("skip" as any),
+  profileId ? { profileId, limit: 20 } : 'skip',
     { key: 'js-notifications-list', ttlMs: 15 * 1000 }
   );
   const markAsRead = useMutation(api.notifications.markAsRead);

@@ -11,6 +11,13 @@ import type { OurFileRouter } from "@/app/api/uploadthing/core";
 import { useAction, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import { useToast } from '@/hooks/use-toast';
+import { OtpErrorAlert } from '@/components/ui/otp-error-alert';
+import { mapErrorToFormField, showOtpErrorToast, withRetry, getServiceStatus, storeDebugOtp, createAutoFillHandler, clearDebugOtp, isFakeOtpResponse } from '@/lib/utils/otp-error-handler';
+import { FakeOtpDisplay } from '@/components/ui/fake-otp-display';
+import { categorizeError, getUserFriendlyMessage } from '@/lib/utils/errors';
+import { inspectSessionCookie, testSessionRetrieval, testCookieSetting, attemptSessionRecovery } from '@/lib/utils/session-debug';
+import { getAvailableAlternatives, describeAlternative } from '@/lib/utils/alternative-verification';
 
 const steps = ["Personal Details", "Professional Details", "Location & Photo", "Verification"] as const;
 
@@ -74,6 +81,9 @@ export default function JobSeekerOnboarding() {
   const [submitting, setSubmitting] = useState(false);
   const [debugOtp, setDebugOtp] = useState<string | null>(null);
   const [otpSent, setOtpSent] = useState(false);
+  const [serviceDown, setServiceDown] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const { toast } = useToast();
 
   const router = useRouter();
   const checkUserExists = useAction(api.auth.checkUserExists);
@@ -161,6 +171,7 @@ export default function JobSeekerOnboarding() {
       setErrors((prev) => ({ ...prev, phone: 'Phone number is required' }));
       return;
     }
+    setServiceDown(false);
     try {
       setSubmitting(true);
       const exists = await checkUserExists({ phone: formData.phone });
@@ -169,13 +180,20 @@ export default function JobSeekerOnboarding() {
         router.push('/auth/login');
         return;
       }
-      const otpResult = await requestOtp({ phone: formData.phone, purpose: 'register' });
-      if ((otpResult as any)?.dev) {
+      const otpResult = await withRetry(() => requestOtp({ phone: formData.phone, purpose: 'register' }), 3);
+      if (isFakeOtpResponse(otpResult)) {
         setDebugOtp((otpResult as any).debugCode);
+        storeDebugOtp((otpResult as any).debugCode);
       }
+      setServiceDown(false);
       setOtpSent(true);
     } catch (e: any) {
-      alert(e.message || 'Failed to send OTP');
+      const field = mapErrorToFormField(e);
+      if (field)
+        setErrors((prev) => ({ ...prev, [field]: getUserFriendlyMessage(categorizeError(e)) } as any));
+      const status = getServiceStatus(e);
+      setServiceDown(Boolean(status?.unavailable));
+      showOtpErrorToast(e, { onRetry: handleSendOtp });
     } finally {
       setSubmitting(false);
     }
@@ -191,14 +209,27 @@ export default function JobSeekerOnboarding() {
     try {
       setSubmitting(true);
       localStorage.setItem("phoneNumber", formData.phone);
+      console.info('[onboarding.submit] Verifying OTP and creating session');
       const result = await verifyOtp({ phone: formData.phone, code: formData.otp, role: 'job-seeker', onboardingData: formData });
       const userId = (result as any)?.userId as Id<'users'> | undefined;
       if (!userId) {
         setErrors((prev) => ({ ...prev, otp: 'Invalid OTP' }));
         return;
       }
+      console.info('[onboarding.submit] Setting password');
       await setPassword({ userId, password: formData.password });
+      const t0 = Date.now();
+      console.info('[onboarding.submit] Creating session');
       const session = await createSession({ userId });
+      const tokenLen = (session as any)?.token?.length || 0;
+      console.info('[onboarding.submit] Session created', { tokenLen, exp: (session as any)?.expiresAt, ms: Date.now() - t0 });
+      if (process.env.NODE_ENV !== 'production') {
+        try {
+          await testCookieSetting(session.token, session.expiresAt);
+        } catch (e) {
+          console.warn('[onboarding.submit] testCookieSetting failed', e);
+        }
+      }
       const setRes = await fetch('/api/session/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -209,11 +240,31 @@ export default function JobSeekerOnboarding() {
         const text = await setRes.text().catch(() => setRes.statusText || 'Failed to set session');
         throw new Error(`Failed to set session: ${text}`);
       }
+      // Verify cookie presence immediately (best-effort, limited in httpOnly)
       try {
-        window.dispatchEvent(new CustomEvent('session-updated'));
+        const ck = inspectSessionCookie();
+        console.info('[onboarding.submit] Cookie inspection', ck);
       } catch {}
-      // small delay to allow MeProvider to pick up the new session
-      await new Promise((res) => setTimeout(res, 100));
+      try { window.dispatchEvent(new CustomEvent('session-updated')); } catch {}
+      // Allow more time for cookie propagation
+      await new Promise((res) => setTimeout(res, 500));
+      // Validate session before redirect
+      let meTest = await testSessionRetrieval();
+      if (!(meTest.ok && meTest.status === 200)) {
+        console.warn('[onboarding.submit] /api/me validation failed (first attempt)', { status: meTest.status });
+        // Optional single recovery attempt in dev
+        if (process.env.NODE_ENV !== 'production') {
+          try { await attemptSessionRecovery(); } catch {}
+          await new Promise(r => setTimeout(r, 150));
+          meTest = await testSessionRetrieval();
+        }
+      }
+      if (!(meTest.ok && meTest.status === 200)) {
+        console.warn('[onboarding.submit] /api/me validation failed (final)', { status: meTest.status });
+        alert('We could not verify your session. Please try again.');
+        return;
+      }
+      try { clearDebugOtp(); } catch {}
       router.replace('/dashboard/job-seeker');
     } catch (e: any) {
       const msg = e?.message || 'Failed to submit. Please try again.';
@@ -438,7 +489,11 @@ export default function JobSeekerOnboarding() {
                 value={formData.phone}
                 placeholder="Mobile Number"
                 maxLength={10}
-                onChange={handleChange}
+                onChange={(e) => {
+                  handleChange(e);
+                  setServiceDown(false);
+                  setErrors((prev) => ({ ...prev, phone: undefined }));
+                }}
                 name="phone"
                 className="flex-1 bg-white text-black placeholder:text-gray-500 focus:border-black"
               />
@@ -447,7 +502,25 @@ export default function JobSeekerOnboarding() {
               </Button>
             </div>
             {errors.phone && <p className="text-red-500 text-sm">{errors.phone}</p>}
-            {debugOtp && <p className="text-green-500 text-sm">OTP: {debugOtp}</p>}
+            {otpSent && debugOtp && (
+              <div className="mt-3">
+                <FakeOtpDisplay
+                  code={debugOtp}
+                  onAutofill={createAutoFillHandler((val) =>
+                    setFormData((s) => ({ ...s, otp: val })),
+                  )}
+                />
+              </div>
+            )}
+            {serviceDown && (
+              <OtpErrorAlert
+                onRetry={handleSendOtp}
+                onDismiss={() => setServiceDown(false)}
+                alternatives={getAvailableAlternatives()
+                  .filter((m) => m !== 'sms')
+                  .map((m) => ({ label: describeAlternative(m), onClick: () => {} }))}
+              />
+            )}
             {otpSent && (
               <>
                 <label className="block text-sm font-medium mb-2">Enter OTP</label>
@@ -455,7 +528,11 @@ export default function JobSeekerOnboarding() {
                   type="text"
                   placeholder="Enter 6-digit OTP"
                   value={formData.otp}
-                  onChange={handleChange}
+                  onChange={(e) => {
+                    handleChange(e);
+                    setServiceDown(false);
+                    setErrors((prev) => ({ ...prev, otp: undefined }));
+                  }}
                   name="otp"
                   className="w-full bg-white text-black placeholder:text-gray-500 focus:border-black text-center text-xl tracking-widest"
                   maxLength={6}
@@ -471,6 +548,15 @@ export default function JobSeekerOnboarding() {
                   className="bg-white text-black placeholder:text-gray-500 focus:border-black"
                 />
                 {errors.password && <p className="text-red-500 text-sm">{errors.password}</p>}
+                {serviceDown && (
+                  <OtpErrorAlert
+                    onRetry={handleSendOtp}
+                    onDismiss={() => setServiceDown(false)}
+                    alternatives={getAvailableAlternatives()
+                      .filter((m) => m !== 'sms')
+                      .map((m) => ({ label: describeAlternative(m), onClick: () => {} }))}
+                  />
+                )}
               </>
             )}
           </div>

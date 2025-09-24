@@ -15,17 +15,17 @@ export function CompanyNotificationsBell({ companyId }: { companyId: Id<'profile
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const { data: unreadCount } = useCachedConvexQuery(
-    (api as any).notifications?.countUnreadByCompany,
-    companyId ? ({ companyId } as any) : ("skip" as any),
+    api.notifications.countUnreadByCompany,
+    companyId ? ({ companyId }) : 'skip',
     { key: 'company-notifications-unread', ttlMs: 15 * 1000 }
   );
   const { data: notifications } = useCachedConvexQuery(
-    (api as any).notifications?.getByCompany,
-    companyId ? ({ companyId, limit: 20 } as any) : ("skip" as any),
+    api.notifications.getByCompany,
+    companyId ? ({ companyId, limit: 20 }) : 'skip',
     { key: 'company-notifications-list', ttlMs: 15 * 1000 }
   );
-  const markAsRead = useMutation((api as any).notifications?.markAsRead);
-  const markAllAsRead = useMutation((api as any).notifications?.markAllAsRead);
+  const markAsRead = useMutation(api.notifications.markAsRead);
+  const markAllAsRead = useMutation(api.notifications.markAllAsRead);
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -44,7 +44,7 @@ export function CompanyNotificationsBell({ companyId }: { companyId: Id<'profile
           <p className="text-sm font-medium text-gray-800">Notifications</p>
           {(unreadCount ?? 0) > 0 && companyId && (
             <Button variant="ghost" size="sm" className="h-7 px-2 text-gray-700" onClick={async () => {
-              await markAllAsRead({ companyId } as any);
+              await markAllAsRead({ companyId });
               invalidateKeys(['company-notifications-unread', 'company-notifications-list']);
             }}>
               <CheckCheck className="h-4 w-4 mr-1" /> Mark all read
@@ -59,7 +59,7 @@ export function CompanyNotificationsBell({ companyId }: { companyId: Id<'profile
           <div key={n._id} className={`px-3 py-2 text-sm ${n.read ? 'text-gray-600' : 'text-gray-900 font-medium'} hover:bg-gray-50 rounded-md mx-2 mb-1`}
             onClick={async () => {
               if (!n.read) {
-                await markAsRead({ notificationId: n._id } as any);
+                await markAsRead({ notificationId: n._id });
                 invalidateKeys(['company-notifications-unread', 'company-notifications-list']);
               }
               if (n.jobId) router.push(`/dashboard/company/jobs/${n.jobId}`);

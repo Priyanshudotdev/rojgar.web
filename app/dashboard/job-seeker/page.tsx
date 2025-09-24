@@ -64,8 +64,8 @@ export default function JobSeekerDashboard() {
     (activeFilter === 'nearby' && !hasLocation)
   );
   const { data: jobs } = useCachedConvexQuery(
-    ready ? api.jobs.getFilteredJobs : (null as any),
-    ready ? (args as any) : ('skip' as any),
+    api.jobs.getFilteredJobs,
+    ready ? (args as any) : 'skip',
     { key: dynamicKey, ttlMs: 15 * 1000 }
   );
 

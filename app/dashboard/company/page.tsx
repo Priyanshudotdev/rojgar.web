@@ -47,7 +47,7 @@ export default function CompanyDashboardPage() {
 
   const { data: jobs } = useCachedConvexQuery(
     api.jobs.getJobsWithStatsByCompany,
-    companyId ? ({ companyId } as any) : ("skip" as any),
+  companyId ? ({ companyId } as any) : 'skip',
     { key: 'jobsByCompany', ttlMs: 2 * 60 * 1000 }
   );
 
@@ -187,7 +187,8 @@ export default function CompanyDashboardPage() {
                 if (url) {
                   setEditValues((p) => ({ ...p, companyPhotoUrl: url }));
                   if (me?.profile?._id) {
-                    try { await setCompanyPhoto({ profileId: me.profile._id as any, url }); try { await refresh(); } catch {} } catch {}
+                    const token = (typeof document !== 'undefined' ? document.cookie.split('; ').find(c => c.startsWith('sessionToken='))?.split('=')[1] : '') || '';
+                    try { await setCompanyPhoto({ profileId: me.profile._id as any, url, token }); try { await refresh(); } catch {} } catch {}
                   }
                 }
               }}

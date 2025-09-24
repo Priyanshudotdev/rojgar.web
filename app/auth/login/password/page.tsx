@@ -113,6 +113,7 @@ export default function SetPasswordPage() {
           const err = new AuthError('SESSION_CREATE_FAILED', `Failed to set session: ${text}`, { category: 'session', status: setRes.status });
           throw err;
         }
+        // Fire event only after success and wait briefly for cookie propagation
         try { window.dispatchEvent(new CustomEvent('session-updated')); } catch {}
         await new Promise((r) => setTimeout(r, 100));
         

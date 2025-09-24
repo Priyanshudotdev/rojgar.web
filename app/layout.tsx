@@ -4,6 +4,7 @@ import './globals.css';
 import '@uploadthing/react/styles.css';
 import type { Metadata } from 'next';
 import { MeProvider } from '@/components/providers/me-provider';
+import { Toaster } from '@/components/ui/toaster';
 
 export const metadata: Metadata = {
   title: 'Rojgar - Find Your Dream Job',
@@ -46,6 +47,7 @@ export default function RootLayout({
             {children}
           </div>
           </MeProvider>
+          <Toaster />
         </ConvexClientProvider>
       </body>
     </html>

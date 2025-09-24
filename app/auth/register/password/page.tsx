@@ -46,11 +46,18 @@ export default function SetPasswordPage() {
       setSubmitting(true);
       await setPasswordMutation({ userId, password });
       const session = await createSession({ userId });
-      await fetch('/api/session/set', {
+      const setRes = await fetch('/api/session/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ token: session.token, expiresAt: session.expiresAt }),
       });
+      if (!setRes.ok) {
+        const text = await setRes.text().catch(() => setRes.statusText || 'Failed to set session');
+        throw new Error(`Failed to set session: ${text}`);
+      }
+      try { window.dispatchEvent(new CustomEvent('session-updated')); } catch {}
+      await new Promise((r) => setTimeout(r, 100));
 
       const role = localStorage.getItem('userRole') as 'company' | 'job-seeker' | null;
 
@@ -61,7 +68,7 @@ export default function SetPasswordPage() {
         localStorage.removeItem('verifiedUserId');
         localStorage.removeItem('newUser');
         localStorage.removeItem('userRole');
-        router.replace(`/onboarding/${role}`);
+  router.replace(`/onboarding/${role}`);
       } else {
         setError('Could not determine your role. Please try again.');
       }

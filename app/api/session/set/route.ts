@@ -37,15 +37,43 @@ export async function POST(request: Request) {
       );
     }
 
-    const res = NextResponse.json({ ok: true });
+    const headers: Record<string, string> = {
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+      'Surrogate-Control': 'no-store',
+    };
+    const res = NextResponse.json({ ok: true }, { headers });
     try {
-      res.cookies.set('sessionToken', body.token, {
+      // Standardize secure flag to production only (align with clear endpoint)
+      const xfp =
+        (request.headers as any).get?.('x-forwarded-proto') || undefined;
+      const viaHttps = String(xfp || '').toLowerCase() === 'https';
+      const secure = process.env.NODE_ENV === 'production';
+      if (process.env.NODE_ENV !== 'production' && viaHttps) {
+        console.info(
+          '[POST /api/session/set] x-forwarded-proto=https detected (dev)',
+        );
+      }
+      const sameSite: 'lax' = 'lax';
+      const cookiePayload = {
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
+        secure,
+        sameSite,
         path: '/',
         expires: new Date(body.expiresAt),
+      } as const;
+      res.cookies.set('sessionToken', body.token, {
+        ...cookiePayload,
       });
+      if (process.env.NODE_ENV !== 'production') {
+        res.headers.set('x-debug-cookie-secure', String(cookiePayload.secure));
+        res.headers.set(
+          'x-debug-cookie-samesite',
+          String(cookiePayload.sameSite),
+        );
+        res.headers.set('x-debug-cookie-path', cookiePayload.path);
+      }
     } catch (e: any) {
       console.error(
         '[POST /api/session/set] Failed to set cookie:',
@@ -60,6 +88,7 @@ export async function POST(request: Request) {
     console.info('[POST /api/session/set] Session cookie set', {
       tokenLen: body.token.length,
       exp: body.expiresAt,
+      nodeEnv: process.env.NODE_ENV,
     });
     return res;
   } catch (e: any) {

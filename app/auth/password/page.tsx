@@ -66,11 +66,18 @@ export default function SetPasswordPage() {
       try {
         setSubmitting(true);
         const res = await verifyPasswordAction({ phone: phoneNumber, password });
-        await fetch('/api/session/set', {
+        const setRes = await fetch('/api/session/set', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ token: res.token, expiresAt: res.expiresAt }),
         });
+        if (!setRes.ok) {
+          const text = await setRes.text().catch(() => setRes.statusText || 'Failed to set session');
+          throw new Error(`Failed to set session: ${text}`);
+        }
+        try { window.dispatchEvent(new CustomEvent('session-updated')); } catch {}
+        await new Promise((r) => setTimeout(r, 100));
         
         if (res.role === 'company') {
           clearLocalStorage();
@@ -102,11 +109,18 @@ export default function SetPasswordPage() {
       setSubmitting(true);
       await setPasswordMutation({ userId: userId as Id<'users'>, password });
       const session = await createSession({ userId: userId as Id<'users'> });
-      await fetch('/api/session/set', {
+      const setRes2 = await fetch('/api/session/set', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ token: session.token, expiresAt: session.expiresAt }),
       });
+      if (!setRes2.ok) {
+        const text = await setRes2.text().catch(() => setRes2.statusText || 'Failed to set session');
+        throw new Error(`Failed to set session: ${text}`);
+      }
+      try { window.dispatchEvent(new CustomEvent('session-updated')); } catch {}
+      await new Promise((r) => setTimeout(r, 100));
 
       const role = localStorage.getItem('userRole') as 'company' | 'job-seeker' | null;
 

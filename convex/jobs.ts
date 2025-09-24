@@ -23,6 +23,47 @@ const JobTypeEnum = v.union(
 );
 const JobStatusEnum = v.union(v.literal('Active'), v.literal('Closed'));
 
+// Sorting options for listings
+const SortEnum = v.union(
+  v.literal('newest'),
+  v.literal('oldest'),
+  v.literal('salary_desc'),
+  v.literal('salary_asc'),
+  v.literal('title_asc'),
+  v.literal('title_desc'),
+  v.literal('relevance'),
+);
+
+function normalize(s: string | undefined | null) {
+  return (s ?? '').toString().trim().toLowerCase();
+}
+
+function applySortGeneric(items: any[], sort: string | undefined) {
+  switch (sort) {
+    case 'oldest':
+      return [...items].sort((a, b) => a.createdAt - b.createdAt);
+    case 'salary_desc':
+      return [...items].sort(
+        (a, b) => (b.salary?.max ?? 0) - (a.salary?.max ?? 0),
+      );
+    case 'salary_asc':
+      return [...items].sort(
+        (a, b) => (a.salary?.max ?? 0) - (b.salary?.max ?? 0),
+      );
+    case 'title_asc':
+      return [...items].sort((a, b) =>
+        normalize(a.title).localeCompare(normalize(b.title)),
+      );
+    case 'title_desc':
+      return [...items].sort((a, b) =>
+        normalize(b.title).localeCompare(normalize(a.title)),
+      );
+    case 'newest':
+    default:
+      return [...items].sort((a, b) => b.createdAt - a.createdAt);
+  }
+}
+
 export const createJob = mutation({
   args: {
     companyId: v.id('profiles'),
@@ -277,8 +318,15 @@ export const getFilteredJobs = query({
     profileId: v.optional(v.id('profiles')),
     city: v.optional(v.string()),
     locality: v.optional(v.string()),
+    // optional pagination and sort
+    offset: v.optional(v.number()),
+    limit: v.optional(v.number()),
+    sort: v.optional(SortEnum),
   },
-  handler: async (ctx, { search, filter, profileId, city, locality }) => {
+  handler: async (
+    ctx,
+    { search, filter, profileId, city, locality, offset, limit, sort },
+  ) => {
     let base: any[] = [];
     const norm = (s: string) => (s || '').toLowerCase();
     if (filter === 'new-jobs') {
@@ -342,6 +390,41 @@ export const getFilteredJobs = query({
     if (search && search.trim()) {
       base = filterJobsBySearch(search, base as any);
     }
+    // optional sort
+    if (sort && sort !== 'relevance') {
+      base = applySortGeneric(base, sort);
+    } else if (sort === 'relevance' && profileId) {
+      // If relevance requested, re-evaluate on raw docs for best scoring
+      const raw = await ctx.db
+        .query('jobs')
+        .withIndex('by_status_createdAt', (q: any) => q.eq('status', 'Active'))
+        .collect();
+      let filtered = raw;
+      if (city) {
+        filtered = filtered.filter((j: any) => {
+          const cityMatch = norm(j.location.city) === norm(city);
+          const locMatch = locality
+            ? norm(j.location.locality ?? '') === norm(locality)
+            : true;
+          return cityMatch && locMatch;
+        });
+      }
+      if (search && search.trim()) {
+        const s = normalize(search);
+        filtered = filtered.filter(
+          (j: any) =>
+            normalize(j.title).includes(s) ||
+            normalize(j.description).includes(s),
+        );
+      }
+      const profile = await ctx.db.get(profileId);
+      const scored = sortJobsByRelevance(filtered, profile ?? {});
+      base = await enrichWithCompany(ctx, scored);
+    }
+    // optional pagination
+    if (typeof offset === 'number' && typeof limit === 'number') {
+      return base.slice(offset, offset + limit);
+    }
     return base;
   },
 });
@@ -365,6 +448,19 @@ export const getJobPublicById = query({
   },
 });
 
+// Check whether a given job seeker has already applied to a job
+export const hasUserApplied = query({
+  args: { jobId: v.id('jobs'), jobSeekerId: v.id('profiles') },
+  handler: async (ctx, { jobId, jobSeekerId }) => {
+    // Use by_jobId index, then check jobSeekerId in memory
+    const apps = await ctx.db
+      .query('applications')
+      .withIndex('by_jobId', (q) => q.eq('jobId', jobId))
+      .collect();
+    return apps.some((a) => a.jobSeekerId === jobSeekerId);
+  },
+});
+
 export const createApplication = mutation({
   args: {
     jobId: v.id('jobs'),
@@ -378,6 +474,20 @@ export const createApplication = mutation({
       throw new Error('Job is closed to applications');
     }
     const now = Date.now();
+    // Prevent duplicate applications for same job & jobSeeker
+    const existing = await ctx.db
+      .query('applications')
+      .withIndex('by_jobId', (q) => q.eq('jobId', args.jobId))
+      .collect();
+    const dup = existing.find((a) => a.jobSeekerId === args.jobSeekerId);
+    if (dup) {
+      return {
+        ok: true,
+        alreadyApplied: true,
+        applicationId: dup._id,
+      } as const;
+    }
+
     const applicationId = await ctx.db.insert('applications', {
       jobId: args.jobId,
       jobSeekerId: args.jobSeekerId,
@@ -400,7 +510,7 @@ export const createApplication = mutation({
       // Non-fatal: continue even if notification insert fails
       console.error('Failed to create notification', e);
     }
-    return applicationId;
+    return { ok: true, applicationId } as const;
   },
 });
 
@@ -549,3 +659,440 @@ export const getApplicantsByCompany = query({
     return perJobApplicants.flat();
   },
 });
+
+// Popular search terms & categories for dynamic suggestions
+export const getPopularSearchTerms = query({
+  args: { profileId: v.optional(v.id('profiles')) },
+  handler: async (ctx, { profileId }) => {
+    // Basic in-memory cache per function instance to avoid recomputation
+    // In a real app, consider a durable cache or periodic materialization
+    const jobs = await ctx.db
+      .query('jobs')
+      .withIndex('by_status_createdAt', (q: any) => q.eq('status', 'Active'))
+      .collect();
+    if (jobs.length === 0)
+      return { terms: [], categories: [], locations: [] } as const;
+
+    const count = (map: Map<string, number>, key: string) => {
+      const k = key.trim().toLowerCase();
+      if (!k) return;
+      map.set(k, (map.get(k) ?? 0) + 1);
+    };
+
+    const titleTerms = new Map<string, number>();
+    const categories = new Map<string, number>();
+    const locations = new Map<string, number>();
+
+    for (const j of jobs) {
+      // split title into words; filter very short tokens and numeric-only tokens
+      (j.title || '')
+        .split(/[^a-zA-Z0-9]+/)
+        .filter((t: string) => t.length >= 3 && !/^\d+$/.test(t))
+        .forEach((t: string) => count(titleTerms, t));
+      // use jobType as a category
+      if (j.jobType) count(categories, j.jobType);
+      // use city as a location
+      if (j.location?.city) count(locations, j.location.city);
+    }
+
+    const top = (m: Map<string, number>, limit = 10) =>
+      Array.from(m.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, limit)
+        .map(([k]) => k)
+        .filter((t) => !['and', 'for', 'the', 'with'].includes(t));
+
+    return {
+      terms: top(titleTerms, 12),
+      categories: top(categories, 8),
+      locations: top(locations, 8),
+    } as const;
+  },
+});
+
+// Applications by job seeker with job & company enrichment (paginated)
+export const getApplicationsByJobSeeker = query({
+  args: {
+    jobSeekerId: v.id('profiles'),
+    limit: v.optional(v.number()),
+    cursor: v.optional(v.string()),
+  },
+  handler: async (ctx, { jobSeekerId, limit, cursor }) => {
+    const pageSize = Math.max(1, Math.min(100, limit ?? 20));
+    const q = ctx.db
+      .query('applications')
+      .withIndex('by_jobSeekerId', (q) => q.eq('jobSeekerId', jobSeekerId))
+      .order('desc');
+    const page = await q.paginate({
+      cursor: cursor ? JSON.parse(cursor) : undefined,
+      numItems: pageSize,
+    });
+    // Batch fetch jobs and companies to avoid N+1
+    const jobIds = Array.from(new Set(page.page.map((a) => a.jobId)));
+    const jobs = await Promise.all(jobIds.map((id) => ctx.db.get(id)));
+    const jobMap = new Map(jobIds.map((id, i) => [id, jobs[i]]));
+    const companyIds = Array.from(
+      new Set(
+        jobs.map((j) => j?.companyId).filter(Boolean) as Array<Id<'profiles'>>,
+      ),
+    );
+    const companies = await Promise.all(companyIds.map((id) => ctx.db.get(id)));
+    const companyMap = new Map(companyIds.map((id, i) => [id, companies[i]]));
+    const enriched = page.page.map((app) => {
+      const job = jobMap.get(app.jobId) as any;
+      const company = job ? (companyMap.get(job.companyId) as any) : null;
+      return {
+        ...app,
+        job: job
+          ? {
+              _id: job._id,
+              title: job.title,
+              location: job.location,
+              salary: job.salary,
+              jobType: job.jobType,
+              company: company
+                ? {
+                    name:
+                      company.companyData?.companyName ??
+                      company.name ??
+                      'Employeer',
+                    photoUrl: company.companyData?.companyPhotoUrl ?? '',
+                  }
+                : null,
+            }
+          : null,
+      } as const;
+    });
+    return {
+      applications: enriched,
+      nextCursor: page.continueCursor
+        ? JSON.stringify(page.continueCursor)
+        : undefined,
+    } as const;
+  },
+});
+
+// Job seeker application statistics
+export const getJobSeekerStats = query({
+  args: { jobSeekerId: v.id('profiles') },
+  handler: async (ctx, { jobSeekerId }) => {
+    const apps = await ctx.db
+      .query('applications')
+      .withIndex('by_jobSeekerId', (q) => q.eq('jobSeekerId', jobSeekerId))
+      .collect();
+    const total = apps.length;
+    const byStatus = new Map<string, number>();
+    for (const a of apps) {
+      const k = String((a as any).status ?? 'New');
+      byStatus.set(k, (byStatus.get(k) ?? 0) + 1);
+    }
+    const hired = byStatus.get('Hired') ?? 0;
+    const rejected = byStatus.get('Rejected') ?? 0;
+    const successRate = total > 0 ? Math.round((hired / total) * 100) : 0;
+    // recent 10
+    const recent = [...apps]
+      .sort((a, b) => Number(b.appliedAt ?? 0) - Number(a.appliedAt ?? 0))
+      .slice(0, 10);
+    return {
+      totalApplications: total,
+      byStatus: Array.from(byStatus.entries()).map(([status, count]) => ({
+        status,
+        count,
+      })),
+      successRate,
+      recent: recent.map((a) => ({
+        _id: a._id,
+        jobId: a.jobId,
+        status: (a as any).status ?? 'New',
+        appliedAt: a.appliedAt,
+      })),
+    } as const;
+  },
+});
+
+// Recent activity timeline for job seeker
+export const getJobSeekerRecentActivity = query({
+  args: { jobSeekerId: v.id('profiles'), limit: v.optional(v.number()) },
+  handler: async (ctx, { jobSeekerId, limit }) => {
+    const pageSize = Math.max(1, Math.min(50, limit ?? 10));
+    const apps = await ctx.db
+      .query('applications')
+      .withIndex('by_jobSeekerId', (q) => q.eq('jobSeekerId', jobSeekerId))
+      .order('desc')
+      .collect();
+    const recent = apps
+      .sort((a, b) => Number(b.appliedAt ?? 0) - Number(a.appliedAt ?? 0))
+      .slice(0, pageSize);
+    // Batch fetch jobs
+    const jobIds = Array.from(new Set(recent.map((a) => a.jobId)));
+    const jobs = await Promise.all(jobIds.map((id) => ctx.db.get(id)));
+    const jobMap = new Map(jobIds.map((id, i) => [id, jobs[i]]));
+    return recent.map((a) => {
+      const job = jobMap.get(a.jobId) as any;
+      return {
+        _id: a._id,
+        status: (a as any).status ?? 'New',
+        appliedAt: a.appliedAt,
+        job: job
+          ? { _id: job._id, title: job.title, companyId: job.companyId }
+          : null,
+      } as const;
+    });
+  },
+});
+
+// Job recommendations based on profile data
+export const getJobRecommendationsForProfile = query({
+  args: { profileId: v.id('profiles'), limit: v.optional(v.number()) },
+  handler: async (ctx, { profileId, limit }) => {
+    const profile = await ctx.db.get(profileId);
+    const items = await ctx.db
+      .query('jobs')
+      .withIndex('by_status_createdAt', (q: any) => q.eq('status', 'Active'))
+      .collect();
+    const scored = sortJobsByRelevance(items, profile ?? {});
+    const sliced =
+      typeof limit === 'number' ? scored.slice(0, limit) : scored.slice(0, 10);
+    return enrichWithCompany(ctx, sliced);
+  },
+});
+
+// Paginated jobs with advanced filtering & sorting
+export const getPaginatedJobs = query({
+  args: {
+    page: v.optional(v.number()),
+    limit: v.number(),
+    cursor: v.optional(v.string()),
+    search: v.optional(v.string()),
+    jobTypes: v.optional(v.array(v.string())),
+    salaryMin: v.optional(v.number()),
+    salaryMax: v.optional(v.number()),
+    experienceLevels: v.optional(v.array(v.string())),
+    city: v.optional(v.string()),
+    locality: v.optional(v.string()),
+    sort: v.optional(SortEnum),
+    profileId: v.optional(v.id('profiles')),
+  },
+  handler: async (
+    ctx,
+    {
+      page,
+      limit,
+      cursor,
+      search,
+      jobTypes,
+      salaryMin,
+      salaryMax,
+      experienceLevels,
+      city,
+      locality,
+      sort,
+      profileId,
+    },
+  ) => {
+    const norm = (s: string) => (s || '').toLowerCase();
+
+    // Coarse filter set-up
+    const jobTypeSet =
+      jobTypes && jobTypes.length > 0
+        ? new Set(jobTypes.map((t) => t.toLowerCase()))
+        : undefined;
+    const expSet =
+      experienceLevels && experienceLevels.length > 0
+        ? new Set(experienceLevels.map((e) => e.toLowerCase()))
+        : undefined;
+    const sterm = search && search.trim() ? normalize(search) : undefined;
+
+    // Map experience requirement to canonical levels for better matching
+    const toExpLevel = (
+      exp: string,
+    ): 'fresher' | 'junior' | 'mid' | 'senior' | 'other' => {
+      const e = norm(exp);
+      if (/(^|\b)(0|0-1|0 to 1|< ?1|less than 1|fresher)(\b|$)/.test(e))
+        return 'fresher';
+      if (/(^|\b)(1|1-2|1-3|1 to 3|2|2-3|junior)(\b|$)/.test(e))
+        return 'junior';
+      if (/(^|\b)(3|3-5|3 to 5|4|5|mid)(\b|$)/.test(e)) return 'mid';
+      if (/(^|\b)(6\+|6\+ years|6|7|8|9|10|senior)(\b|$)/.test(e))
+        return 'senior';
+      return 'other';
+    };
+
+    // Iterate over index by_status_createdAt with pagination windowing
+    const pageSize = Math.max(1, Math.min(100, limit));
+    const usePage = typeof page === 'number' && !cursor; // backward compat
+    let start = 0;
+    if (usePage) start = Math.max(0, (Math.max(1, page!) - 1) * pageSize);
+
+    // Basic streaming with bounded window: we'll read in chunks until we fill pageSize or exhaust
+    let results: any[] = [];
+    let read = 0;
+    let nextCursor: string | undefined = undefined;
+
+    const q = ctx.db
+      .query('jobs')
+      .withIndex('by_status_createdAt', (q: any) => q.eq('status', 'Active'))
+      .order('desc');
+
+    // iteration cursor (stringified createdAt+id)
+    let iter: any | undefined = cursor ? JSON.parse(cursor) : undefined;
+
+    while (results.length < pageSize) {
+      const batch = await q.paginate({
+        cursor: iter,
+        numItems: Math.min(100, pageSize * 2),
+      });
+      const items = batch.page;
+      if (items.length === 0) {
+        iter = batch.continueCursor;
+      }
+
+      // Apply coarse filters as we stream
+      for (const j of items) {
+        // job type early filter
+        if (jobTypeSet && !jobTypeSet.has(norm(j.jobType))) continue;
+        // city/locality early filter
+        if (city && norm(j.location?.city) !== norm(city)) continue;
+        if (locality && norm(j.location?.locality ?? '') !== norm(locality))
+          continue;
+        // salary coarse filters
+        if (
+          typeof salaryMin === 'number' &&
+          Number(j.salary?.max ?? 0) < salaryMin
+        )
+          continue;
+        if (
+          typeof salaryMax === 'number' &&
+          Number(j.salary?.min ?? 0) > salaryMax
+        )
+          continue;
+        // experience mapping
+        if (expSet) {
+          const mapped = toExpLevel(j.experienceRequired || '');
+          const ok = Array.from(expSet).some((lvl) => {
+            const l = norm(lvl);
+            return l === mapped;
+          });
+          if (!ok) continue;
+        }
+        // search filter (title/description)
+        if (sterm) {
+          const t = normalize(j.title);
+          const d = normalize(j.description);
+          if (!t.includes(sterm) && !d.includes(sterm)) continue;
+        }
+
+        // If using page (numeric), skip until start offset
+        if (usePage && read++ < start) continue;
+        results.push(j);
+        if (results.length >= pageSize) break;
+      }
+
+      if (!batch.continueCursor) {
+        iter = undefined;
+        break;
+      }
+      iter = batch.continueCursor;
+      if (results.length >= pageSize) break;
+    }
+
+    // Sorting: relevance or generic
+    if (sort === 'relevance' && profileId) {
+      const profile = await ctx.db.get(profileId);
+      results = sortJobsByRelevance(results, profile ?? {});
+    } else {
+      results = applySortGeneric(
+        results.map((j) => ({
+          ...j,
+          createdAt: Number(j.createdAt ?? 0),
+          salary: {
+            min: Number(j.salary?.min ?? 0),
+            max: Number(j.salary?.max ?? 0),
+          },
+        })),
+        sort ?? 'newest',
+      );
+    }
+
+    const enriched = await enrichWithCompany(ctx, results);
+    // For cursor pagination, supply next cursor; for page/limit, infer hasMore from iter
+    if (!usePage) {
+      nextCursor = iter ? JSON.stringify(iter) : undefined;
+    }
+
+    return {
+      jobs: enriched,
+      totalCount: undefined,
+      hasMore: usePage ? Boolean(iter) : Boolean(nextCursor),
+      page: usePage ? Math.max(1, page!) : undefined,
+      pageSize,
+      nextCursor,
+    } as const;
+  },
+});
+
+// Job statistics for insights and counters
+export const getJobStats = query({
+  args: {},
+  handler: async (ctx) => {
+    const allActive = await ctx.db
+      .query('jobs')
+      .withIndex('by_status_createdAt', (q: any) => q.eq('status', 'Active'))
+      .collect();
+    const totalActive = allActive.length;
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const dayMs = startOfDay.getTime();
+    const weekCut = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    let newToday = 0;
+    let newThisWeek = 0;
+    const byCategory = new Map<string, number>();
+    for (const j of allActive) {
+      const created = Number(j.createdAt ?? 0);
+      if (created >= dayMs) newToday++;
+      if (created >= weekCut) newThisWeek++;
+      const k = j.jobType ?? 'Other';
+      byCategory.set(k, (byCategory.get(k) ?? 0) + 1);
+    }
+    return {
+      totalActive,
+      newToday,
+      newThisWeek,
+      byCategory: Array.from(byCategory.entries()).map(([category, count]) => ({
+        category,
+        count,
+      })),
+    } as const;
+  },
+});
+
+// Job categories with counts for categorization UI
+export const getJobCategories = query({
+  args: {},
+  handler: async (ctx) => {
+    const allActive = await ctx.db
+      .query('jobs')
+      .withIndex('by_status_createdAt', (q: any) => q.eq('status', 'Active'))
+      .collect();
+    const map = new Map<string, number>();
+    for (const j of allActive) {
+      const k = j.jobType ?? 'Other';
+      map.set(k, (map.get(k) ?? 0) + 1);
+    }
+    return Array.from(map.entries()).map(([category, count]) => ({
+      category,
+      count,
+    })) as Array<{
+      category: string;
+      count: number;
+    }>;
+  },
+});
+
+function setHasAny(set: Set<string>, hay: string) {
+  const parts = hay
+    .split(/\s|,|\//g)
+    .map((p) => p.trim().toLowerCase())
+    .filter(Boolean);
+  return parts.some((p) => set.has(p));
+}
