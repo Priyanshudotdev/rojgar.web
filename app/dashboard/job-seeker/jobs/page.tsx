@@ -6,6 +6,10 @@ import { Search, ArrowLeft } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { JobCard } from '@/components/ui/job-card';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { ApplicationFilters, type ApplicationFilterState } from '@/components/job-seeker/application-filters';
+import { ApplicationsList } from '@/components/job-seeker/applications-list';
+import { useApplications } from '@/hooks/useApplications';
 import { useCachedConvexQuery } from '@/hooks/useCachedConvexQuery';
 import { api } from '@/convex/_generated/api';
 import { useToast } from '@/hooks/use-toast';
@@ -133,185 +137,214 @@ export default function JobsPage() {
   );
   const quickChips = (popular?.terms as string[] | undefined) ?? [];
 
+  // Applied jobs tab state --------------------------------------------------
+  const [activeTab, setActiveTab] = useState<'all' | 'applied'>('all');
+  const [appFilters, setAppFilters] = useState<ApplicationFilterState>({
+    status: 'all',
+    search: '',
+    dateRange: 'all',
+    sort: 'newest',
+  });
+
+  const handleOpenChat = (application: any) => {
+    // Navigate to chat page (job seeker) - conversation auto-created with application
+    router.push('/dashboard/job-seeker/chat');
+  };
+
   return (
     <div className="min-h-screen bg-white">
-      {/* Header */}
       <div className="flex items-center p-4 border-b gap-3">
         <button onClick={() => router.push('/dashboard/job-seeker')} aria-label="Back">
           <ArrowLeft className="w-6 h-6" />
         </button>
         <div className="flex-1">
           <h1 className="text-lg font-semibold">Jobs</h1>
-          <p className="text-xs text-gray-500">{(data?.totalCount ?? jobs.length) || 0} jobs available</p>
+          {activeTab === 'all' ? (
+            <p className="text-xs text-gray-500">{(data?.totalCount ?? jobs.length) || 0} jobs available</p>
+          ) : (
+            <p className="text-xs text-gray-500">Your applications</p>
+          )}
         </div>
       </div>
-
-      {/* Search & quick filters */}
-      <div className="p-4 border-b space-y-3">
-        <div className="relative">
-          <Search className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <Input
-            placeholder="Search by title or description"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="pl-10"
-            aria-label="Search jobs"
-          />
-        </div>
-  <FilterChips onSelect={(chip: string) => setQuery(chip)} chips={quickChips} />
-      </div>
-
-      {/* Filters & sorting */}
-      <div className="p-4 border-b">
-        <div className="flex items-center justify-between">
-          <JobFilters
-            value={{ jobTypes, salaryMin, salaryMax, experienceLevels, city, locality }}
-            onChange={(v: JobFiltersValue) => {
-              setJobTypes(v.jobTypes ?? []);
-              setSalaryMin(v.salaryMin);
-              setSalaryMax(v.salaryMax);
-              setExperienceLevels(v.experienceLevels ?? []);
-              setCity(v.city);
-              setLocality(v.locality);
-            }}
-          />
-          <SavedFilters value={{ jobTypes, salaryMin, salaryMax, experienceLevels, city, locality }} onSelect={(v) => {
-            setJobTypes(v.jobTypes ?? []);
-            setSalaryMin(v.salaryMin);
-            setSalaryMax(v.salaryMax);
-            setExperienceLevels(v.experienceLevels ?? []);
-            setCity(v.city);
-            setLocality(v.locality);
-          }} />
-          <div className="ml-4">
-            <SortingOptions value={sort} onChange={setSort} />
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)} className="w-full">
+        <TabsList className="w-full justify-start border-b rounded-none px-4 gap-4">
+          <TabsTrigger value="all">All Jobs</TabsTrigger>
+          <TabsTrigger value="applied">Applied Jobs</TabsTrigger>
+        </TabsList>
+        {/* All Jobs Tab */}
+        <TabsContent value="all" className="m-0">
+          <div className="p-4 border-b space-y-3">
+            <div className="relative">
+              <Search className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <Input
+                placeholder="Search by title or description"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                className="pl-10"
+                aria-label="Search jobs"
+              />
+            </div>
+            <FilterChips onSelect={(chip: string) => setQuery(chip)} chips={quickChips} />
           </div>
-        </div>
-        <div className="mt-3 flex items-center gap-2 text-sm text-gray-600">
-          <span>Page size:</span>
-          {[10, 20, 50].map((sz) => (
-            <button
-              key={sz}
-              onClick={() => setPageSize(sz)}
-              className={`px-2 py-1 rounded border ${pageSize === sz ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-700 border-gray-200'}`}
-              aria-pressed={pageSize === sz}
-            >
-              {sz}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Stats */}
-      <div className="p-4 border-b grid grid-cols-3 gap-3 text-center text-sm">
-        <div>
-          <div className="text-gray-500">Total Active</div>
-          <div className="font-semibold">{stats?.totalActive ?? 0}</div>
-        </div>
-        <div>
-          <div className="text-gray-500">New Today</div>
-          <div className="font-semibold">{stats?.newToday ?? 0}</div>
-        </div>
-        <div>
-          <div className="text-gray-500">This Week</div>
-          <div className="font-semibold">{stats?.newThisWeek ?? 0}</div>
-        </div>
-      </div>
-
-      {/* Content */}
-      {isLoading ? (
-        <JobListingSkeleton />
-      ) : error ? (
-        <div className="p-4 text-sm text-red-700 bg-red-50 border border-red-100">Failed to load jobs.</div>
-      ) : (
-        <div className="p-4 space-y-4">
-          {/* Categories */}
-          {Array.isArray(categoriesData) && categoriesData.length > 0 && (
-            <div>
-              <h2 className="text-sm font-semibold mb-2">Categories</h2>
-              <div className="flex flex-wrap gap-2">
-                {categoriesData.map((c: any) => {
-                  const active = jobTypes.includes(c.category);
-                  return (
-                    <button
-                      key={c.category}
-                      onClick={() => {
-                        setJobTypes((prev) => (
-                          prev.includes(c.category)
-                            ? prev.filter((x) => x !== c.category)
-                            : [...prev, c.category]
-                        ));
-                      }}
-                      className={`px-3 py-1 rounded-full text-sm border ${active ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-700 border-gray-200'}`}
-                      aria-pressed={active}
-                    >
-                      {c.category} ({c.count})
-                    </button>
-                  );
-                })}
+          <div className="p-4 border-b">
+            <div className="flex items-center justify-between">
+              <JobFilters
+                value={{ jobTypes, salaryMin, salaryMax, experienceLevels, city, locality }}
+                onChange={(v: JobFiltersValue) => {
+                  setJobTypes(v.jobTypes ?? []);
+                  setSalaryMin(v.salaryMin);
+                  setSalaryMax(v.salaryMax);
+                  setExperienceLevels(v.experienceLevels ?? []);
+                  setCity(v.city);
+                  setLocality(v.locality);
+                }}
+              />
+              <SavedFilters value={{ jobTypes, salaryMin, salaryMax, experienceLevels, city, locality }} onSelect={(v) => {
+                setJobTypes(v.jobTypes ?? []);
+                setSalaryMin(v.salaryMin);
+                setSalaryMax(v.salaryMax);
+                setExperienceLevels(v.experienceLevels ?? []);
+                setCity(v.city);
+                setLocality(v.locality);
+              }} />
+              <div className="ml-4">
+                <SortingOptions value={sort} onChange={setSort} />
               </div>
             </div>
-          )}
-          {/* Categorization could be applied client-side if desired */}
-          <div className="grid grid-cols-1 gap-4">
-            {jobs.map((job: any) => (
-              <div key={job._id} className="space-y-2">
-                <JobCard
-                  job={job}
-                  onDetailsClick={() => router.push(`/job/${job._id}`)}
-                  onShare={async () => {
-                    const url = `${location.origin}/job/${job._id}`;
-                    if (navigator.share) await navigator.share({ title: job.title, url });
-                    else {
-                      await navigator.clipboard.writeText(url);
-                      toast({ title: 'Link copied', description: 'Job link copied to clipboard.' });
-                    }
-                  }}
-                />
-                <div className="flex justify-end">
-                  <button
-                    className={`text-sm underline ${bookmarks.includes(job._id) ? 'text-green-700' : 'text-gray-600'}`}
-                    onClick={() => toggleBookmark(job._id)}
-                    aria-label={bookmarks.includes(job._id) ? 'Remove bookmark' : 'Bookmark job'}
-                  >
-                    {bookmarks.includes(job._id) ? 'Bookmarked' : 'Bookmark'}
-                  </button>
-                </div>
-              </div>
-            ))}
+            <div className="mt-3 flex items-center gap-2 text-sm text-gray-600">
+              <span>Page size:</span>
+              {[10, 20, 50].map((sz) => (
+                <button
+                  key={sz}
+                  onClick={() => setPageSize(sz)}
+                  className={`px-2 py-1 rounded border ${pageSize === sz ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-700 border-gray-200'}`}
+                  aria-pressed={pageSize === sz}
+                >
+                  {sz}
+                </button>
+              ))}
+            </div>
           </div>
-
-          {/* Pagination */}
-          <Pagination className="mt-2">
-            <PaginationContent>
-              <PaginationItem>
-                <PaginationPrevious
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    if (page > 1) setPage(page - 1);
-                  }}
-                />
-              </PaginationItem>
-              <PaginationItem>
-                <PaginationLink isActive size="default">
-                  Page {page}
-                </PaginationLink>
-              </PaginationItem>
-              <PaginationItem>
-                <PaginationNext
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    if (hasMore) setPage(page + 1);
-                  }}
-                />
-              </PaginationItem>
-            </PaginationContent>
-          </Pagination>
-        </div>
-      )}
-
+          <div className="p-4 border-b grid grid-cols-3 gap-3 text-center text-sm">
+            <div>
+              <div className="text-gray-500">Total Active</div>
+              <div className="font-semibold">{stats?.totalActive ?? 0}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">New Today</div>
+              <div className="font-semibold">{stats?.newToday ?? 0}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">This Week</div>
+              <div className="font-semibold">{stats?.newThisWeek ?? 0}</div>
+            </div>
+          </div>
+          {isLoading ? (
+            <JobListingSkeleton />
+          ) : error ? (
+            <div className="p-4 text-sm text-red-700 bg-red-50 border border-red-100">Failed to load jobs.</div>
+          ) : (
+            <div className="p-4 space-y-4">
+              {Array.isArray(categoriesData) && categoriesData.length > 0 && (
+                <div>
+                  <h2 className="text-sm font-semibold mb-2">Categories</h2>
+                  <div className="flex flex-wrap gap-2">
+                    {categoriesData.map((c: any) => {
+                      const active = jobTypes.includes(c.category);
+                      return (
+                        <button
+                          key={c.category}
+                          onClick={() => {
+                            setJobTypes((prev) => (
+                              prev.includes(c.category)
+                                ? prev.filter((x) => x !== c.category)
+                                : [...prev, c.category]
+                            ));
+                          }}
+                          className={`px-3 py-1 rounded-full text-sm border ${active ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-700 border-gray-200'}`}
+                          aria-pressed={active}
+                        >
+                          {c.category} ({c.count})
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              <div className="grid grid-cols-1 gap-4">
+                {jobs.map((job: any) => (
+                  <div key={job._id} className="space-y-2">
+                    <JobCard
+                      job={job}
+                      onDetailsClick={() => router.push(`/job/${job._id}`)}
+                      onShare={async () => {
+                        const url = `${location.origin}/job/${job._id}`;
+                        if (navigator.share) await navigator.share({ title: job.title, url });
+                        else {
+                          await navigator.clipboard.writeText(url);
+                          toast({ title: 'Link copied', description: 'Job link copied to clipboard.' });
+                        }
+                      }}
+                    />
+                    <div className="flex justify-end">
+                      <button
+                        className={`text-sm underline ${bookmarks.includes(job._id) ? 'text-green-700' : 'text-gray-600'}`}
+                        onClick={() => toggleBookmark(job._id)}
+                        aria-label={bookmarks.includes(job._id) ? 'Remove bookmark' : 'Bookmark job'}
+                      >
+                        {bookmarks.includes(job._id) ? 'Bookmarked' : 'Bookmark'}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <Pagination className="mt-2">
+                <PaginationContent>
+                  <PaginationItem>
+                    <PaginationPrevious
+                      href="#"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        if (page > 1) setPage(page - 1);
+                      }}
+                    />
+                  </PaginationItem>
+                  <PaginationItem>
+                    <PaginationLink isActive size="default">Page {page}</PaginationLink>
+                  </PaginationItem>
+                  <PaginationItem>
+                    <PaginationNext
+                      href="#"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        if (hasMore) setPage(page + 1);
+                      }}
+                    />
+                  </PaginationItem>
+                </PaginationContent>
+              </Pagination>
+            </div>
+          )}
+        </TabsContent>
+        {/* Applied Jobs Tab */}
+        <TabsContent value="applied" className="m-0">
+          <div className="p-4 border-b space-y-4">
+            <ApplicationFilters
+              value={appFilters}
+              onChange={setAppFilters}
+              statusCounts={{ New: 0, 'In Review': 0, Interviewing: 0, Hired: 0, Rejected: 0 }}
+            />
+          </div>
+          <div className="p-4">
+            <ApplicationsList
+              profileId={profileId as any}
+              filters={appFilters as any}
+              setFilters={setAppFilters as any}
+              onOpenChat={handleOpenChat}
+            />
+          </div>
+        </TabsContent>
+      </Tabs>
       <div className="pb-28" />
     </div>
   );

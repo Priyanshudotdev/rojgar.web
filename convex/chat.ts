@@ -383,7 +383,8 @@ export const listConversationsForProfile = query({
       : 'job-seeker';
     const enriched = await Promise.all(
       merged.map(async (c) => {
-        const otherId = c.participantA === caller._id ? c.participantB : c.participantA;
+        const otherId =
+          c.participantA === caller._id ? c.participantB : c.participantA;
         const other: any = await ctx.db.get(otherId);
         let jobTitle: string | undefined = undefined;
         if (c.jobId) {
@@ -414,10 +415,12 @@ export const listConversationsForProfile = query({
           const msg: any = await ctx.db.get(c.lastMessageId);
           if (msg && msg.body) {
             const body = (msg.body as string).trim();
-            lastMessagePreview = body.length > 140 ? body.slice(0, 139) + '…' : body;
+            lastMessagePreview =
+              body.length > 140 ? body.slice(0, 139) + '…' : body;
           }
         }
-        const unreadCount = c.participantA === caller._id ? c.unreadA : c.unreadB;
+        const unreadCount =
+          c.participantA === caller._id ? c.unreadA : c.unreadB;
         return {
           ...c,
           participantName,
@@ -426,7 +429,7 @@ export const listConversationsForProfile = query({
           lastMessagePreview,
           unreadCount,
         };
-      })
+      }),
     );
     return {
       conversations: enriched,
