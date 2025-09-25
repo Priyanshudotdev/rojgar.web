@@ -510,6 +510,60 @@ export const createApplication = mutation({
       // Non-fatal: continue even if notification insert fails
       console.error('Failed to create notification', e);
     }
+    // Attempt to auto-create (or fetch) a conversation between company & job seeker tied to this application
+    try {
+      const companyProfileId = job.companyId as Id<'profiles'>;
+      const jobSeekerProfileId = args.jobSeekerId as Id<'profiles'>;
+      // Participants stored sorted; replicate minimal logic here to avoid import cycle
+      const a = String(companyProfileId) < String(jobSeekerProfileId) ? companyProfileId : jobSeekerProfileId;
+      const b = a === companyProfileId ? jobSeekerProfileId : companyProfileId;
+      // Check existing conversation by applicationId first
+      const existingByApp = await ctx.db
+        .query('conversations')
+        .withIndex('by_applicationId', q => q.eq('applicationId', applicationId))
+        .collect();
+      let conversationId: Id<'conversations'> | undefined = existingByApp[0]?._id;
+      if (!conversationId) {
+        const existing = await ctx.db
+          .query('conversations')
+          .withIndex('by_participantA_lastMessageAt', q => q.eq('participantA', a))
+          .collect();
+        const match = existing.find(c => c.participantB === b);
+        if (match) {
+          conversationId = match._id as Id<'conversations'>;
+          // Link applicationId if not already
+          if (!match.applicationId) {
+            await ctx.db.patch(match._id, { applicationId });
+          }
+        } else {
+          const convoNow = Date.now();
+          conversationId = await ctx.db.insert('conversations', {
+            participantA: a,
+            participantB: b,
+            applicationId,
+            lastMessageAt: convoNow,
+            lastMessageId: undefined,
+            unreadA: 0,
+            unreadB: 0,
+            createdAt: convoNow,
+          });
+          // Seed a system message welcoming both parties
+          const systemBody = 'Conversation started for application.';
+          const msgId = await ctx.db.insert('messages', {
+            conversationId,
+            senderId: a, // arbitrary participant for system messages
+            body: systemBody,
+            kind: 'system',
+            createdAt: convoNow,
+            deliveredAt: convoNow,
+            readAt: convoNow,
+          });
+          await ctx.db.patch(conversationId, { lastMessageId: msgId });
+        }
+      }
+    } catch (e) {
+      console.error('Auto conversation creation failed', e);
+    }
     return { ok: true, applicationId } as const;
   },
 });

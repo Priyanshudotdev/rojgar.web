@@ -132,4 +132,33 @@ export default defineSchema({
   })
     .index('by_companyId', ['companyId'])
     .index('by_companyId_createdAt', ['companyId', 'createdAt']),
+
+  // Conversations between a job seeker and a company (usually tied to an application)
+  conversations: defineTable({
+    participantA: v.id('profiles'), // Deterministic lower sorted id
+    participantB: v.id('profiles'), // Deterministic higher sorted id
+    applicationId: v.optional(v.id('applications')),
+    lastMessageAt: v.number(),
+    lastMessageId: v.optional(v.id('messages')),
+    unreadA: v.number(), // unread count for participantA
+    unreadB: v.number(), // unread count for participantB
+    createdAt: v.number(),
+  })
+    .index('by_participantA_lastMessageAt', ['participantA', 'lastMessageAt'])
+    .index('by_participantB_lastMessageAt', ['participantB', 'lastMessageAt'])
+    .index('by_applicationId', ['applicationId'])
+    .index('by_createdAt', ['createdAt']),
+
+  // Individual messages for a conversation
+  messages: defineTable({
+    conversationId: v.id('conversations'),
+    senderId: v.id('profiles'),
+    body: v.string(),
+    kind: v.union(v.literal('user'), v.literal('system')),
+    createdAt: v.number(),
+    deliveredAt: v.optional(v.number()),
+    readAt: v.optional(v.number()),
+  })
+    .index('by_conversation_createdAt', ['conversationId', 'createdAt'])
+    .index('by_sender_createdAt', ['senderId', 'createdAt']),
 });
