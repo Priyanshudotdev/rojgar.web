@@ -138,6 +138,13 @@ export default defineSchema({
     participantA: v.id('profiles'), // Deterministic lower sorted id
     participantB: v.id('profiles'), // Deterministic higher sorted id
     applicationId: v.optional(v.id('applications')),
+    jobId: v.optional(v.id('jobs')),
+    status: v.union(
+      v.literal('active'),
+      v.literal('archived'),
+      v.literal('blocked'),
+    ),
+    pairKey: v.string(), // `${participantA}:${participantB}` for uniqueness enforcement
     lastMessageAt: v.number(),
     lastMessageId: v.optional(v.id('messages')),
     unreadA: v.number(), // unread count for participantA
@@ -147,6 +154,9 @@ export default defineSchema({
     .index('by_participantA_lastMessageAt', ['participantA', 'lastMessageAt'])
     .index('by_participantB_lastMessageAt', ['participantB', 'lastMessageAt'])
     .index('by_applicationId', ['applicationId'])
+    .index('by_jobId_lastMessageAt', ['jobId', 'lastMessageAt'])
+    .index('by_status_lastMessageAt', ['status', 'lastMessageAt'])
+    .index('by_pairKey', ['pairKey'])
     .index('by_createdAt', ['createdAt']),
 
   // Individual messages for a conversation

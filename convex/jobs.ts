@@ -515,20 +515,28 @@ export const createApplication = mutation({
       const companyProfileId = job.companyId as Id<'profiles'>;
       const jobSeekerProfileId = args.jobSeekerId as Id<'profiles'>;
       // Participants stored sorted; replicate minimal logic here to avoid import cycle
-      const a = String(companyProfileId) < String(jobSeekerProfileId) ? companyProfileId : jobSeekerProfileId;
+      const a =
+        String(companyProfileId) < String(jobSeekerProfileId)
+          ? companyProfileId
+          : jobSeekerProfileId;
       const b = a === companyProfileId ? jobSeekerProfileId : companyProfileId;
       // Check existing conversation by applicationId first
       const existingByApp = await ctx.db
         .query('conversations')
-        .withIndex('by_applicationId', q => q.eq('applicationId', applicationId))
+        .withIndex('by_applicationId', (q) =>
+          q.eq('applicationId', applicationId),
+        )
         .collect();
-      let conversationId: Id<'conversations'> | undefined = existingByApp[0]?._id;
+      let conversationId: Id<'conversations'> | undefined =
+        existingByApp[0]?._id;
       if (!conversationId) {
         const existing = await ctx.db
           .query('conversations')
-          .withIndex('by_participantA_lastMessageAt', q => q.eq('participantA', a))
+          .withIndex('by_participantA_lastMessageAt', (q) =>
+            q.eq('participantA', a),
+          )
           .collect();
-        const match = existing.find(c => c.participantB === b);
+        const match = existing.find((c) => c.participantB === b);
         if (match) {
           conversationId = match._id as Id<'conversations'>;
           // Link applicationId if not already
@@ -541,6 +549,9 @@ export const createApplication = mutation({
             participantA: a,
             participantB: b,
             applicationId,
+            jobId: args.jobId,
+            status: 'active',
+            pairKey: `${a}:${b}`,
             lastMessageAt: convoNow,
             lastMessageId: undefined,
             unreadA: 0,
