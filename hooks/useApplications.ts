@@ -4,7 +4,12 @@ import { useCachedConvexQuery } from '@/hooks/useCachedConvexQuery';
 import type { Id } from '@/convex/_generated/dataModel';
 
 // Application status union
-export type ApplicationStatus = 'New' | 'In Review' | 'Interviewing' | 'Hired' | 'Rejected';
+export type ApplicationStatus =
+  | 'New'
+  | 'In Review'
+  | 'Interviewing'
+  | 'Hired'
+  | 'Rejected';
 
 export interface EnrichedApplication {
   _id: Id<'applications'>;
@@ -34,19 +39,44 @@ interface FilterState {
   sort: 'newest' | 'oldest' | 'status';
 }
 
-export function useApplications({ pageSize = 20, profileId }: UseApplicationsOptions) {
+export function useApplications({
+  pageSize = 20,
+  profileId,
+}: UseApplicationsOptions) {
   const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [pendingCursor, setPendingCursor] = useState<string | undefined>();
   const [items, setItems] = useState<EnrichedApplication[]>([]);
   const [exhausted, setExhausted] = useState(false);
-  const [filter, setFilter] = useState<FilterState>({ status: 'all', search: '', dateRange: 'all', sort: 'newest' });
-
-  const args = profileId ? { jobSeekerId: profileId, limit: pageSize, cursor } : 'skip';
-  const { data, isLoading, error } = useCachedConvexQuery(api.jobs.getApplicationsByJobSeeker, args as any, {
-    key: `applications:${profileId}:${cursor ?? 'start'}`,
-    ttlMs: 30_000,
-    persist: false,
+  const [filter, setFilter] = useState<FilterState>({
+    status: 'all',
+    search: '',
+    dateRange: 'all',
+    sort: 'newest',
   });
+
+  // Use undefined (not the custom 'skip' string) when profileId is absent so arg
+  // validation doesn't receive an unexpected type. The consumer hook will treat
+  // undefined as a skipped query.
+  const args = profileId
+    ? { jobSeekerId: profileId, limit: pageSize, cursor }
+    : undefined;
+  const { data, isLoading, error } = useCachedConvexQuery(
+    api.jobs.getApplicationsByJobSeeker,
+    args as any,
+    {
+      key: `applications:${profileId}:${cursor ?? 'start'}`,
+      ttlMs: 30_000,
+      persist: false,
+    },
+  );
+
+  // Reset pagination & items when profile changes
+  useEffect(() => {
+    setCursor(undefined);
+    setPendingCursor(undefined);
+    setItems([]);
+    setExhausted(false);
+  }, [profileId]);
 
   useEffect(() => {
     if (!data) return;
@@ -54,7 +84,7 @@ export function useApplications({ pageSize = 20, profileId }: UseApplicationsOpt
     if (!cursor) {
       setItems(page);
     } else if (pendingCursor === cursor) {
-      setItems(prev => [...prev, ...page]);
+      setItems((prev) => [...prev, ...page]);
     }
     const next = (data as any).nextCursor as string | undefined;
     setExhausted(!next);
@@ -81,27 +111,37 @@ export function useApplications({ pageSize = 20, profileId }: UseApplicationsOpt
     let list = items;
     const now = Date.now();
     if (filter.status !== 'all') {
-      list = list.filter(a => a.status === filter.status);
+      list = list.filter((a) => a.status === filter.status);
     }
     if (filter.search.trim()) {
       const s = filter.search.toLowerCase();
-      list = list.filter(a =>
-        (a.job?.title || '').toLowerCase().includes(s) ||
-        (a.job?.company?.name || '').toLowerCase().includes(s)
+      list = list.filter(
+        (a) =>
+          (a.job?.title || '').toLowerCase().includes(s) ||
+          (a.job?.company?.name || '').toLowerCase().includes(s),
       );
     }
     if (filter.dateRange !== 'all') {
-      const windowMs = filter.dateRange === '7d' ? 7 : filter.dateRange === '30d' ? 30 : 90;
+      const windowMs =
+        filter.dateRange === '7d' ? 7 : filter.dateRange === '30d' ? 30 : 90;
       const cutoff = now - windowMs * 24 * 60 * 60 * 1000;
-      list = list.filter(a => a.appliedAt >= cutoff);
+      list = list.filter((a) => a.appliedAt >= cutoff);
     }
     switch (filter.sort) {
       case 'oldest':
         list = [...list].sort((a, b) => a.appliedAt - b.appliedAt);
         break;
       case 'status':
-        const order: ApplicationStatus[] = ['New', 'In Review', 'Interviewing', 'Hired', 'Rejected'];
-        list = [...list].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
+        const order: ApplicationStatus[] = [
+          'New',
+          'In Review',
+          'Interviewing',
+          'Hired',
+          'Rejected',
+        ];
+        list = [...list].sort(
+          (a, b) => order.indexOf(a.status) - order.indexOf(b.status),
+        );
         break;
       case 'newest':
       default:
@@ -113,11 +153,11 @@ export function useApplications({ pageSize = 20, profileId }: UseApplicationsOpt
   // Aggregated counts -------------------------------------------------------
   const statusCounts = useMemo(() => {
     const map: Record<ApplicationStatus, number> = {
-      New: 0,
+      'New': 0,
       'In Review': 0,
-      Interviewing: 0,
-      Hired: 0,
-      Rejected: 0,
+      'Interviewing': 0,
+      'Hired': 0,
+      'Rejected': 0,
     };
     for (const a of items) map[a.status] = (map[a.status] ?? 0) + 1;
     return map;

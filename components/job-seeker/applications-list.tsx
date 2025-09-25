@@ -8,19 +8,27 @@ import { Button } from '@/components/ui/button';
 
 interface ApplicationsListProps {
   profileId: Id<'profiles'> | undefined;
-  filters: ReturnType<typeof useApplications>['filter'];
-  setFilters: ReturnType<typeof useApplications>['setFilter'];
-  onOpenChat: (application: any) => void;
+  onOpenChat: (application: { _id: any }) => void;
+  // Expose status counts & filter outward if needed later
+  onStatusCounts?: (counts: ReturnType<typeof useApplications>['statusCounts']) => void;
+  externalFilter?: ReturnType<typeof useApplications>['filter'];
+  onFilterChange?: (f: ReturnType<typeof useApplications>['filter']) => void;
 }
 
-export function ApplicationsList({ profileId, filters, setFilters, onOpenChat }: ApplicationsListProps) {
-  const { applications, isLoading, error, loadMore, exhausted, statusCounts } = useApplications({ profileId, pageSize: 20 });
+export function ApplicationsList({ profileId, onOpenChat, onStatusCounts, externalFilter, onFilterChange }: ApplicationsListProps) {
+  const { applications, isLoading, error, loadMore, exhausted, statusCounts, filter, setFilter } = useApplications({ profileId, pageSize: 20 });
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
-  // Sync external filters into internal hook filter state
+  // Allow a parent-provided filter to drive internal state (single source of truth)
   useEffect(() => {
-    // No-op: we provide external filters directly for now; could connect if needed.
-  }, [filters]);
+    if (externalFilter && externalFilter !== filter) {
+      setFilter(externalFilter as any);
+    }
+  }, [externalFilter, filter, setFilter]);
+
+  useEffect(() => {
+    onStatusCounts?.(statusCounts);
+  }, [statusCounts, onStatusCounts]);
 
   // Infinite scroll
   useEffect(() => {
@@ -32,6 +40,10 @@ export function ApplicationsList({ profileId, filters, setFilters, onOpenChat }:
     obs.observe(el);
     return () => obs.disconnect();
   }, [loadMore, exhausted]);
+
+  if (!profileId) {
+    return <div className="p-6 text-sm text-gray-500">Loading your profile…</div>;
+  }
 
   if (isLoading && applications.length === 0) {
     return (
@@ -54,7 +66,11 @@ export function ApplicationsList({ profileId, filters, setFilters, onOpenChat }:
   return (
     <div className="space-y-4 mt-4">
       {applications.map(app => (
-        <ApplicationCard key={app._id} application={app as any} onChat={onOpenChat} />
+        <ApplicationCard
+          key={app._id}
+          application={app as any}
+          onChat={() => onOpenChat(app as any)}
+        />
       ))}
       {!exhausted && <div ref={loadMoreRef} className="text-center text-xs text-gray-400 py-4">Loading more…</div>}
       <div className="pb-10" />

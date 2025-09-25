@@ -139,16 +139,16 @@ export default function JobsPage() {
 
   // Applied jobs tab state --------------------------------------------------
   const [activeTab, setActiveTab] = useState<'all' | 'applied'>('all');
-  const [appFilters, setAppFilters] = useState<ApplicationFilterState>({
-    status: 'all',
-    search: '',
-    dateRange: 'all',
-    sort: 'newest',
-  });
+  // Applied jobs hook (single source of truth for applications + filters)
+  const {
+    filter: appFilter,
+    setFilter: setAppFilter,
+    statusCounts: appStatusCounts,
+  } = useApplications({ profileId: profileId as any, pageSize: 20 });
 
-  const handleOpenChat = (application: any) => {
-    // Navigate to chat page (job seeker) - conversation auto-created with application
-    router.push('/dashboard/job-seeker/chat');
+  const handleOpenChat = (application: { _id: string }) => {
+    // Deep link to chat with application context
+    router.push(`/dashboard/job-seeker/chat?applicationId=${application._id}`);
   };
 
   return (
@@ -329,18 +329,39 @@ export default function JobsPage() {
         {/* Applied Jobs Tab */}
         <TabsContent value="applied" className="m-0">
           <div className="p-4 border-b space-y-4">
-            <ApplicationFilters
-              value={appFilters}
-              onChange={setAppFilters}
-              statusCounts={{ New: 0, 'In Review': 0, Interviewing: 0, Hired: 0, Rejected: 0 }}
-            />
+            {profileId ? (
+              <ApplicationFilters
+                value={appFilter as any}
+                onChange={setAppFilter as any}
+                statusCounts={appStatusCounts as any}
+              />
+            ) : (
+              <div className="text-sm text-gray-500">Loading your applications…</div>
+            )}
           </div>
+          {/* Summary stats row */}
+          {profileId && (
+            <div className="p-4 border-b grid grid-cols-3 gap-3 text-center text-xs">
+              <div>
+                <div className="text-gray-500">Total</div>
+                <div className="font-semibold">{Object.values(appStatusCounts).reduce((a: number,b: number)=>a+b,0)}</div>
+              </div>
+              <div>
+                <div className="text-gray-500">Active</div>
+                <div className="font-semibold">{(appStatusCounts['New'] ?? 0) + (appStatusCounts['In Review'] ?? 0) + (appStatusCounts['Interviewing'] ?? 0)}</div>
+              </div>
+              <div>
+                <div className="text-gray-500">Hired</div>
+                <div className="font-semibold">{appStatusCounts['Hired'] ?? 0}</div>
+              </div>
+            </div>
+          )}
           <div className="p-4">
             <ApplicationsList
               profileId={profileId as any}
-              filters={appFilters as any}
-              setFilters={setAppFilters as any}
               onOpenChat={handleOpenChat}
+              externalFilter={appFilter as any}
+              onFilterChange={setAppFilter as any}
             />
           </div>
         </TabsContent>
