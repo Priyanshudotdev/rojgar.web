@@ -11,7 +11,7 @@ export function useCachedConvexQuery<
 >(
   queryRef: any,
   args: TArgs | 'skip',
-  options?: { key?: string; ttlMs?: number },
+  options?: { key?: string; ttlMs?: number; persist?: boolean },
 ) {
   const isSkipped =
     (args as unknown) === 'skip' || args === (undefined as unknown);
@@ -41,18 +41,19 @@ export function useCachedConvexQuery<
       setHydrated(true);
       return;
     }
-    try {
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const parsed = JSON.parse(raw) as { t: number; v: TData };
-        if (!options?.ttlMs || Date.now() - parsed.t < options.ttlMs) {
-          setCached(parsed.v);
-        } else {
-          // expired
-          localStorage.removeItem(key);
+    if (options?.persist !== false) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw) as { t: number; v: TData };
+          if (!options?.ttlMs || Date.now() - parsed.t < options.ttlMs) {
+            setCached(parsed.v);
+          } else {
+            localStorage.removeItem(key);
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
     setHydrated(true);
   }, [key, options?.ttlMs, isSkipped]);
 
@@ -66,14 +67,19 @@ export function useCachedConvexQuery<
     if (isSkipped) return;
     if (convexData === undefined) return;
     if (wroteRef.current) return;
-    try {
-      localStorage.setItem(
-        key,
-        JSON.stringify({ t: Date.now(), v: convexData }),
-      );
+    if (options?.persist !== false) {
+      try {
+        localStorage.setItem(
+          key,
+          JSON.stringify({ t: Date.now(), v: convexData }),
+        );
+        setCached(convexData);
+        wroteRef.current = true;
+      } catch {}
+    } else {
       setCached(convexData);
       wroteRef.current = true;
-    } catch {}
+    }
   }, [convexData, key, isSkipped]);
 
   return {

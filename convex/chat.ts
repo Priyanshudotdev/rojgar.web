@@ -259,7 +259,8 @@ export const getConversation = query({
     const caller = await getCallerProfile(ctx);
     const convo = await ctx.db.get(conversationId);
     if (!convo) return null;
-    if (convo.participantA !== caller._id && convo.participantB !== caller._id) return null;
+    if (convo.participantA !== caller._id && convo.participantB !== caller._id)
+      return null;
     return convo;
   },
 });
@@ -376,8 +377,59 @@ export const listConversationsForProfile = query({
         continue;
       }
     }
+    // Enrich conversations with participant & job metadata for UI labeling
+    const viewerRole: 'company' | 'job-seeker' = caller.companyData
+      ? 'company'
+      : 'job-seeker';
+    const enriched = await Promise.all(
+      merged.map(async (c) => {
+        const otherId = c.participantA === caller._id ? c.participantB : c.participantA;
+        const other: any = await ctx.db.get(otherId);
+        let jobTitle: string | undefined = undefined;
+        if (c.jobId) {
+          const job: any = await ctx.db.get(c.jobId);
+          if (job) jobTitle = job.title;
+        }
+        // Resolve participant display name role-aware
+        let participantName: string | undefined = undefined;
+        let participantAvatarUrl: string | undefined = undefined;
+        if (other) {
+          const isCompany = !!other?.companyData;
+          if (viewerRole === 'job-seeker' && isCompany) {
+            participantName = other?.companyData?.companyName || other?.name;
+            participantAvatarUrl = other?.companyData?.companyPhotoUrl;
+          } else if (viewerRole === 'company' && !isCompany) {
+            participantName = other?.name;
+            participantAvatarUrl = other?.jobSeekerData?.profilePhotoUrl;
+          } else {
+            participantName = other?.name;
+            participantAvatarUrl = isCompany
+              ? other?.companyData?.companyPhotoUrl
+              : other?.jobSeekerData?.profilePhotoUrl;
+          }
+        }
+        // Last message preview (fetch message body if we have id)
+        let lastMessagePreview: string | undefined = undefined;
+        if (c.lastMessageId) {
+          const msg: any = await ctx.db.get(c.lastMessageId);
+          if (msg && msg.body) {
+            const body = (msg.body as string).trim();
+            lastMessagePreview = body.length > 140 ? body.slice(0, 139) + '…' : body;
+          }
+        }
+        const unreadCount = c.participantA === caller._id ? c.unreadA : c.unreadB;
+        return {
+          ...c,
+          participantName,
+          participantAvatarUrl,
+          jobTitle,
+          lastMessagePreview,
+          unreadCount,
+        };
+      })
+    );
     return {
-      conversations: merged,
+      conversations: enriched,
       nextCursorA: pageA.continueCursor
         ? JSON.stringify(pageA.continueCursor)
         : undefined,
