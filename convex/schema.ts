@@ -25,6 +25,21 @@ const JobTypeEnum = v.union(
   v.literal('Temporary'),
 );
 
+// Extended notification & system enums
+const NotificationTypeEnum = v.union(
+  // Existing / legacy types
+  v.literal('application:new'),
+  v.literal('job:closed'),
+  v.literal('chat:new_message'),
+  // New types
+  v.literal('chat:new_message_from_company'),
+  v.literal('application:status_updated'),
+  v.literal('application:interview_scheduled'),
+  v.literal('chat:conversation_started'),
+  v.literal('application:submitted'),
+);
+const RecipientTypeEnum = v.union(v.literal('company'), v.literal('job-seeker'));
+
 export default defineSchema({
   users: defineTable({
     phone: v.string(),
@@ -96,9 +111,13 @@ export default defineSchema({
     jobSeekerId: v.id('profiles'),
     status: ApplicationStatusEnum,
     appliedAt: v.number(),
+    // Enhanced tracking
+    lastStatusUpdate: v.optional(v.number()),
+    statusUpdatedBy: v.optional(v.id('profiles')),
   })
     .index('by_jobId', ['jobId'])
-    .index('by_jobSeekerId', ['jobSeekerId']),
+    .index('by_jobSeekerId', ['jobSeekerId'])
+    .index('by_status_lastStatusUpdate', ['status', 'lastStatusUpdate']),
 
   otps: defineTable({
     phone: v.string(),
@@ -120,18 +139,30 @@ export default defineSchema({
     .index('by_token', ['token'])
     .index('by_userId', ['userId']),
 
-  // Notifications for companies (e.g., new applicant, job status changes)
+  // Enhanced notifications supporting both companies & job seekers
   notifications: defineTable({
-    companyId: v.id('profiles'),
-    type: v.string(), // e.g., 'application:new', 'job:closed'
+    // Backward compatibility: retain companyId but make optional moving forward
+    companyId: v.optional(v.id('profiles')),
+    profileId: v.optional(v.id('profiles')), // unified recipient profile
+    recipientType: v.optional(RecipientTypeEnum),
+    type: NotificationTypeEnum,
     title: v.string(),
     body: v.string(),
     jobId: v.optional(v.id('jobs')),
+    applicationId: v.optional(v.id('applications')),
+    conversationId: v.optional(v.id('conversations')),
+    senderId: v.optional(v.id('profiles')),
     read: v.boolean(),
     createdAt: v.number(),
   })
+    // Legacy indexes
     .index('by_companyId', ['companyId'])
-    .index('by_companyId_createdAt', ['companyId', 'createdAt']),
+    .index('by_companyId_createdAt', ['companyId', 'createdAt'])
+    // New indexes
+    .index('by_profileId_createdAt', ['profileId', 'createdAt'])
+    .index('by_recipientType_createdAt', ['recipientType', 'createdAt'])
+    .index('by_applicationId', ['applicationId'])
+    .index('by_conversationId', ['conversationId']),
 
   // Conversations between a job seeker and a company (usually tied to an application)
   conversations: defineTable({
@@ -150,6 +181,8 @@ export default defineSchema({
     unreadA: v.number(), // unread count for participantA
     unreadB: v.number(), // unread count for participantB
     createdAt: v.number(),
+    initiatedBy: v.optional(v.id('profiles')),
+    lastNotificationAt: v.optional(v.number()),
   })
     .index('by_participantA_lastMessageAt', ['participantA', 'lastMessageAt'])
     .index('by_participantB_lastMessageAt', ['participantB', 'lastMessageAt'])
@@ -157,7 +190,8 @@ export default defineSchema({
     .index('by_jobId_lastMessageAt', ['jobId', 'lastMessageAt'])
     .index('by_status_lastMessageAt', ['status', 'lastMessageAt'])
     .index('by_pairKey', ['pairKey'])
-    .index('by_createdAt', ['createdAt']),
+    .index('by_createdAt', ['createdAt'])
+    .index('by_initiatedBy_createdAt', ['initiatedBy', 'createdAt']),
 
   // Individual messages for a conversation
   messages: defineTable({
@@ -168,7 +202,10 @@ export default defineSchema({
     createdAt: v.number(),
     deliveredAt: v.optional(v.number()),
     readAt: v.optional(v.number()),
+    metadata: v.optional(v.any()),
+    relatedApplicationId: v.optional(v.id('applications')),
   })
     .index('by_conversation_createdAt', ['conversationId', 'createdAt'])
-    .index('by_sender_createdAt', ['senderId', 'createdAt']),
+    .index('by_sender_createdAt', ['senderId', 'createdAt'])
+    .index('by_relatedApplicationId', ['relatedApplicationId']),
 });

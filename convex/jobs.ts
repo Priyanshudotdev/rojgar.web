@@ -493,22 +493,42 @@ export const createApplication = mutation({
       jobSeekerId: args.jobSeekerId,
       status: 'New',
       appliedAt: now,
+      lastStatusUpdate: now,
+      statusUpdatedBy: args.jobSeekerId,
     });
-    // Create a notification for the company that owns this job
+    // Create notifications for both company and job seeker
     try {
       const seekerProfile = await ctx.db.get(args.jobSeekerId);
+      const companyProfile = await ctx.db.get(job.companyId);
+      const seekerName = seekerProfile?.name ?? 'A candidate';
+      const companyName = companyProfile?.companyData?.companyName || companyProfile?.name || 'Company';
+      // Company notification
       await ctx.db.insert('notifications', {
         companyId: job.companyId,
+        profileId: job.companyId,
+        recipientType: 'company',
         type: 'application:new',
         title: 'New application received',
-        body: `${seekerProfile?.name ?? 'A candidate'} applied to ${job.title}`,
+        body: `${seekerName} applied to ${job.title}`,
         jobId: args.jobId,
+        applicationId,
+        read: false,
+        createdAt: now,
+      });
+      // Job seeker confirmation
+      await ctx.db.insert('notifications', {
+        profileId: args.jobSeekerId,
+        recipientType: 'job-seeker',
+        type: 'application:submitted',
+        title: 'Application submitted',
+        body: `You applied to ${job.title} at ${companyName}`,
+        jobId: args.jobId,
+        applicationId,
         read: false,
         createdAt: now,
       });
     } catch (e) {
-      // Non-fatal: continue even if notification insert fails
-      console.error('Failed to create notification', e);
+      console.error('Failed to create application notifications', e);
     }
     // Attempt to auto-create (or fetch) a conversation between company & job seeker tied to this application
     try {
@@ -557,6 +577,7 @@ export const createApplication = mutation({
             unreadA: 0,
             unreadB: 0,
             createdAt: convoNow,
+            initiatedBy: args.jobSeekerId,
           });
           // Seed a system message welcoming both parties
           const systemBody = 'Conversation started for application.';
@@ -568,8 +589,38 @@ export const createApplication = mutation({
             createdAt: convoNow,
             deliveredAt: convoNow,
             readAt: convoNow,
+            relatedApplicationId: applicationId,
           });
           await ctx.db.patch(conversationId, { lastMessageId: msgId });
+          // Conversation started notifications (best effort)
+          try {
+            await ctx.db.insert('notifications', {
+              profileId: a,
+              recipientType: 'job-seeker',
+              type: 'chat:conversation_started',
+              title: 'Conversation created',
+              body: 'A new conversation was created for your application.',
+              applicationId,
+              conversationId,
+              jobId: args.jobId,
+              read: false,
+              createdAt: convoNow,
+            });
+            await ctx.db.insert('notifications', {
+              profileId: b,
+              recipientType: 'company',
+              type: 'chat:conversation_started',
+              title: 'Conversation created',
+              body: 'A new conversation was created with a candidate.',
+              applicationId,
+              conversationId,
+              jobId: args.jobId,
+              read: false,
+              createdAt: convoNow,
+            });
+          } catch (e) {
+            console.error('conversation start notification failed', e);
+          }
         }
       }
     } catch (e) {
@@ -587,6 +638,99 @@ export const getApplicationsByJob = query({
       .withIndex('by_jobId', (q) => q.eq('jobId', args.jobId))
       .collect();
     return applications;
+  },
+});
+
+// Update application status with chat + notifications integration
+export const updateApplicationStatus = mutation({
+  args: {
+    applicationId: v.id('applications'),
+    newStatus: v.union(
+      v.literal('New'),
+      v.literal('In Review'),
+      v.literal('Interviewing'),
+      v.literal('Hired'),
+      v.literal('Rejected'),
+    ),
+    updaterProfileId: v.id('profiles'),
+    note: v.optional(v.string()),
+  },
+  handler: async (ctx, { applicationId, newStatus, updaterProfileId, note }) => {
+    const app = (await ctx.db.get(applicationId)) as any;
+    if (!app) throw new Error('APPLICATION_NOT_FOUND');
+    if (app.status === newStatus) return { ok: true, unchanged: true } as const;
+    const job = (await ctx.db.get(app.jobId)) as any;
+    if (!job) throw new Error('JOB_NOT_FOUND');
+    // Authorization: only company owning job or job seeker (for self-cancel maybe) - for now restrict to company
+    if (job.companyId !== updaterProfileId) throw new Error('FORBIDDEN');
+    const now = Date.now();
+    await ctx.db.patch(applicationId, {
+      status: newStatus,
+      lastStatusUpdate: now,
+      statusUpdatedBy: updaterProfileId,
+    });
+    // Find or create conversation to post system message
+    let convo = await ctx.db
+      .query('conversations')
+      .withIndex('by_applicationId', (q) => q.eq('applicationId', applicationId))
+      .unique();
+    if (!convo) {
+      // Conversation might not yet exist (should be rare). Create minimal.
+  const a = job.companyId as any;
+  const b = app.jobSeekerId as any;
+      const participantA = String(a) < String(b) ? a : b;
+      const participantB = participantA === a ? b : a;
+      const convoNow = now;
+      const convoId = await ctx.db.insert('conversations', {
+        participantA,
+        participantB,
+        applicationId,
+  jobId: job._id as any,
+        status: 'active',
+        pairKey: `${participantA}:${participantB}`,
+        lastMessageAt: convoNow,
+        lastMessageId: undefined,
+        unreadA: 0,
+        unreadB: 0,
+        createdAt: convoNow,
+        initiatedBy: updaterProfileId,
+      });
+      convo = await ctx.db.get(convoId);
+    }
+    // System message
+    const statusMsg = `Status changed to ${newStatus}${note ? ' - ' + note : ''}`;
+    const msgId = await ctx.db.insert('messages', {
+      conversationId: convo!._id,
+      senderId: convo!.participantA,
+      body: statusMsg,
+      kind: 'system',
+      createdAt: now,
+      deliveredAt: now,
+      readAt: now,
+      metadata: { kind: 'applicationStatus', newStatus, note },
+      relatedApplicationId: applicationId,
+    });
+    await ctx.db.patch(convo!._id, { lastMessageAt: now, lastMessageId: msgId });
+    // Notifications to both parties
+    try {
+      for (const participant of [convo!.participantA, convo!.participantB]) {
+        await ctx.db.insert('notifications', {
+          profileId: participant,
+            recipientType: participant === (job.companyId as any) ? 'company' : 'job-seeker',
+          type: 'application:status_updated',
+          title: 'Application status updated',
+          body: statusMsg.slice(0, 140),
+          jobId: job._id as any,
+          applicationId,
+          conversationId: convo!._id,
+          read: false,
+          createdAt: now,
+        });
+      }
+    } catch (e) {
+      console.error('status update notifications failed', e);
+    }
+    return { ok: true, messageId: msgId } as const;
   },
 });
 
