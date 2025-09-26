@@ -51,9 +51,28 @@ export function useCachedConvexQuery<
   // Note: When skipped, we DO NOT call useQuery at all (prevents UNAUTHENTICATED during auth bootstrap)
   const convexData = ((): TData | undefined => {
     // eslint-disable-next-line react-hooks/rules-of-hooks
-    return !isSkipped && !isQueryMissing
-      ? (useQuery(queryRef, args as any) as unknown as TData | undefined)
-      : undefined;
+    if (!isSkipped && !isQueryMissing) {
+      try {
+        return useQuery(queryRef, args as any) as unknown as TData | undefined;
+      } catch (e: any) {
+        if (
+          typeof window !== 'undefined' &&
+          process.env.NODE_ENV !== 'production'
+        ) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            'useCachedConvexQuery: useQuery threw; treating as undefined once',
+            {
+              key: options?.key,
+              args,
+              message: e?.message,
+            },
+          );
+        }
+        return undefined;
+      }
+    }
+    return undefined;
   })();
   const wroteRef = useRef(false);
 

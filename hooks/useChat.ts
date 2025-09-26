@@ -1,12 +1,10 @@
+'use client';
+
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation } from 'convex/react';
 import { Id } from '../convex/_generated/dataModel';
 import { api } from '../convex/_generated/api';
 import { useCachedConvexQuery } from './useCachedConvexQuery';
-
-// Chat related hooks encapsulating conversation & message logic.
-// These hooks follow existing caching + real-time patterns while adding
-// optimistic updates, pagination helpers, and convenience utilities.
 
 // Types ----------------------------------------------------------------------
 export interface ConversationSummary {
@@ -26,6 +24,7 @@ export interface MessageRecord {
   _id: Id<'messages'>;
   conversationId: Id<'conversations'>;
   senderProfileId?: Id<'profiles'> | null;
+  senderId?: Id<'profiles'> | null; // server-side field
   body: string;
   createdAt: number;
   deliveredAt?: number | null;
@@ -41,6 +40,7 @@ export function useConversations(pageSize = 20, enabled = true) {
   const [pendingCursor, setPendingCursor] = useState<string | null>(null);
   const [items, setItems] = useState<ConversationSummary[]>([]);
   const [exhausted, setExhausted] = useState(false);
+
   // Try to derive caller profile id from global (set by MeProvider) to avoid Convex auth dependency
   const [callerProfileId, setCallerProfileId] = useState<any>(undefined);
   useEffect(() => {
@@ -54,7 +54,6 @@ export function useConversations(pageSize = 20, enabled = true) {
   const finalEnabled = enabled && Boolean(callerProfileId);
   const { data, isLoading, error } = useCachedConvexQuery(
     api.chat.listConversationsForProfile,
-    // Only include cursors when defined; passing null triggers validator errors
     finalEnabled
       ? ((c) => {
           const base: any = { limit: pageSize };
@@ -70,31 +69,101 @@ export function useConversations(pageSize = 20, enabled = true) {
   );
 
   useEffect(() => {
-    if (!data) return;
-    // Expect backend to return shape: { conversations, pageInfo }
-    const conversations = (data as any).conversations as ConversationSummary[];
-    // Determine next cursor logic using nextCursorA/nextCursorB if present
-    const nextA = (data as any).nextCursorA as string | undefined;
-    const nextB = (data as any).nextCursorB as string | undefined;
-    if (cursor === null) {
-      setItems(conversations);
-    } else if (pendingCursor === cursor) {
-      setItems((prev) => [...prev, ...conversations]);
+    let cancelled = false;
+    try {
+      if (!data) return;
+      const payloadAny = data as any;
+      const isObj = typeof payloadAny === 'object' && payloadAny !== null;
+
+      const conversationsRaw =
+        isObj && Array.isArray(payloadAny.conversations)
+          ? (payloadAny.conversations as ConversationSummary[])
+          : [];
+      const conversations: ConversationSummary[] = Array.isArray(
+        conversationsRaw,
+      )
+        ? conversationsRaw.filter(Boolean)
+        : [];
+
+      const nextA =
+        isObj && typeof payloadAny?.nextCursorA === 'string'
+          ? (payloadAny.nextCursorA as string)
+          : undefined;
+      const nextB =
+        isObj && typeof payloadAny?.nextCursorB === 'string'
+          ? (payloadAny.nextCursorB as string)
+          : undefined;
+
+      if (cancelled) return;
+
+      if (cursor === null) {
+        setItems(conversations);
+      } else if (pendingCursor === cursor) {
+        setItems((prev) => {
+          const safePrev = Array.isArray(prev) ? prev : [];
+          return [...safePrev, ...conversations];
+        });
+      }
+
+      setExhausted(!nextA && !nextB);
+    } catch (e) {
+      if (process.env.NODE_ENV !== 'production') {
+        try {
+          // eslint-disable-next-line no-console
+          console.warn(
+            '[useConversations] processing error; falling back to []',
+            e,
+            { data },
+          );
+        } catch {}
+      }
+      if (!cancelled) {
+        setItems([]);
+        setExhausted(true);
+      }
+    } finally {
+      if (!cancelled) setPendingCursor(null);
+      if (process.env.NODE_ENV !== 'production') {
+        try {
+          const payloadAny = data as any;
+          if (
+            !(typeof payloadAny === 'object' && payloadAny !== null) ||
+            !Array.isArray(payloadAny?.conversations)
+          ) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              '[useConversations] payload missing conversations array; defaulting to []',
+              payloadAny,
+            );
+          }
+        } catch {}
+      }
     }
-    // Exhausted when both are undefined
-    setExhausted(!nextA && !nextB);
-    setPendingCursor(null);
+    return () => {
+      cancelled = true;
+    };
   }, [data, cursor, pendingCursor]);
 
   const loadMore = useCallback(() => {
     if (exhausted || pendingCursor) return;
-    const next = (data as any)?.nextCursorA || (data as any)?.nextCursorB;
+    const d: any = data;
+    const next =
+      (typeof d?.nextCursorA === 'string' && d.nextCursorA) ||
+      (typeof d?.nextCursorB === 'string' && d.nextCursorB) ||
+      undefined;
     if (!next) return;
     setPendingCursor(next);
     setCursor(next);
   }, [data, exhausted, pendingCursor]);
 
-  return { conversations: items, isLoading, error, loadMore, exhausted };
+  const safeConversations = Array.isArray(items) ? items : [];
+  return {
+    conversations: safeConversations,
+    isLoading,
+    error,
+    loadMore,
+    exhausted,
+  } as const;
 }
 
 // useMessages ----------------------------------------------------------------
@@ -122,7 +191,9 @@ export function useMessages(
   useEffect(() => {
     if (!data || !conversationId) return;
     const payload = data as any;
-    const messages = payload.messages as MessageRecord[];
+    const messages: MessageRecord[] = Array.isArray(payload?.messages)
+      ? (payload.messages as MessageRecord[])
+      : [];
 
     if (cursor === null) {
       setItems(messages);
@@ -137,19 +208,31 @@ export function useMessages(
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' }),
       );
     }
+
+    if (
+      process.env.NODE_ENV !== 'production' &&
+      !Array.isArray(payload?.messages)
+    ) {
+      try {
+        // eslint-disable-next-line no-console
+        console.warn(
+          '[useMessages] payload missing messages array; defaulting to []',
+          payload,
+        );
+      } catch {}
+    }
   }, [data, conversationId, cursor]);
 
   const loadOlder = useCallback(() => {
     if (loadingMore) return;
-    const nextCursor = (data as any)?.nextCursor as string | null;
+    const d: any = data;
+    const nextCursor = typeof d?.nextCursor === 'string' ? d.nextCursor : null;
     if (!nextCursor) return;
     setLoadingMore(true);
     setCursor(nextCursor);
   }, [data, loadingMore]);
 
-  // Real-time new messages: rely on convex live query reactivity (data includes latest)
-  // Optimistic messages are merged locally below.
-
+  // Optimistic updates helpers ------------------------------------------------
   const addOptimisticMessage = useCallback((temp: MessageRecord) => {
     setItems((prev) => [...prev, temp]);
     autoscrollRef.current = true;
@@ -173,29 +256,32 @@ export function useMessages(
     );
   }, []);
 
-  // Auto-mark delivery for peer messages
+  // Auto-mark delivery for peer messages -------------------------------------
   const markBatch = useMutation(api.chat.markMessagesAsDelivered);
   const batchPendingRef = useRef(false);
   useEffect(() => {
-    if (!conversationId || !items.length || batchPendingRef.current) return;
-    const myId = opts?.currentProfileId as any;
+    if (
+      !conversationId ||
+      (items?.length ?? 0) === 0 ||
+      batchPendingRef.current
+    )
+      return;
+    const myId = (opts?.currentProfileId as any) || null;
     if (!myId) return;
     const toDeliver = items
-      .filter((m) => {
-        const sender: any = (m as any).senderProfileId || (m as any).senderId;
-        return !m.optimistic && !m.deliveredAt && sender && sender !== myId;
-      })
-      .map((m) => m._id as any);
-    if (toDeliver.length === 0) return;
+      .filter(
+        (m) =>
+          (m.senderProfileId ?? (m as any).senderId) !== myId && !m.deliveredAt,
+      )
+      .map((m) => m._id as Id<'messages'>);
+    if ((toDeliver?.length ?? 0) === 0) return;
     batchPendingRef.current = true;
-    (async () => {
-      try {
-        await markBatch({ messageIds: toDeliver });
-      } finally {
+    markBatch({ messageIds: toDeliver })
+      .catch(() => {})
+      .finally(() => {
         batchPendingRef.current = false;
-      }
-    })();
-  }, [conversationId, items, opts?.currentProfileId, markBatch]);
+      });
+  }, [items, markBatch, conversationId, opts?.currentProfileId]);
 
   return {
     messages: items,
@@ -210,6 +296,7 @@ export function useMessages(
   } as const;
 }
 
+// Typing indicator -----------------------------------------------------------
 export function useTypingIndicator(
   conversationId: Id<'conversations'> | undefined,
   currentProfileId?: Id<'profiles'>,
@@ -223,9 +310,9 @@ export function useTypingIndicator(
       persist: false,
     },
   );
-  const setTyping = useMutation(api.chat.setTypingIndicator);
   const convoWrap = data as any;
   const convo = convoWrap?.conversation as any;
+
   const otherTypingTs = (() => {
     if (!convo) return 0;
     if (!currentProfileId)
@@ -234,28 +321,25 @@ export function useTypingIndicator(
     return amA ? convo.typingBAt || 0 : convo.typingAAt || 0;
   })();
   const isOtherTyping = otherTypingTs && Date.now() - otherTypingTs < 5000;
+
   const otherParticipantName: string | undefined = (() => {
     if (!convoWrap) return undefined;
     const amA = convoWrap.conversation?.participantA === currentProfileId;
     const other = amA ? convoWrap.participantB : convoWrap.participantA;
     return other?.company?.companyName || other?.name || undefined;
   })();
-  const publish = useCallback(async () => {
-    if (!conversationId) return;
-    try {
-      await setTyping({ conversationId });
-    } catch {}
-  }, [conversationId, setTyping]);
-  return { isOtherTyping, setTyping: publish, otherParticipantName } as const;
+
+  return { isOtherTyping, otherParticipantName } as const;
 }
 
+// Typing publisher (throttled) ----------------------------------------------
 export function useTypingPublisher(
   conversationId: Id<'conversations'> | undefined,
-  currentProfileId?: Id<'profiles'>,
 ) {
   const setTyping = useMutation(api.chat.setTypingIndicator);
   const lastSentRef = useRef(0);
   const timeoutRef = useRef<any>(null);
+
   const touch = useCallback(() => {
     const now = Date.now();
     if (now - lastSentRef.current > 2000) {
@@ -267,17 +351,18 @@ export function useTypingPublisher(
       // let it expire naturally on clients after ~5s
     }, 5000);
   }, [conversationId, setTyping]);
-  useEffect(() => {
-    return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    };
-  }, []);
+
+  useEffect(
+    () => () => timeoutRef.current && clearTimeout(timeoutRef.current),
+    [],
+  );
+
   return { touch } as const;
 }
 
-// useSendMessage -------------------------------------------------------------
+// Send message with optimistic UI -------------------------------------------
 export function useSendMessage(
-  conversationId: Id<'conversations'> | undefined,
+  conversationId: Id<'conversations'> | string | null | undefined,
   helpers?: {
     addOptimisticMessage?: (m: MessageRecord) => void;
     resolveOptimistic?: (tempId: string, real: MessageRecord) => void;
@@ -285,45 +370,46 @@ export function useSendMessage(
   },
 ) {
   const sendMutation = useMutation(api.chat.sendMessage);
-  const meProfileIdRef = useRef<Id<'profiles'> | undefined>(undefined);
-  // Best-effort: try to derive me.profile from a global if available in app context
-  // This file avoids importing providers to keep hooks decoupled; runtime may set window.__meProfileId
+  const meProfileIdRef = useRef<Id<'profiles'> | null>(null);
   useEffect(() => {
     try {
       const anyWin: any = window as any;
-      if (anyWin && anyWin.__meProfileId)
-        meProfileIdRef.current = anyWin.__meProfileId as Id<'profiles'>;
-    } catch {}
+      meProfileIdRef.current = anyWin?.__meProfileId ?? null;
+    } catch {
+      meProfileIdRef.current = null;
+    }
   }, []);
 
   return useCallback(
     async (body: string) => {
-      if (!conversationId) return;
-      const trimmed = body.trim();
+      const convId = conversationId as Id<'conversations'> | undefined;
+      if (!convId) return;
+      const trimmed = (body || '').trim();
       if (!trimmed) return;
       const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const optimistic: MessageRecord = {
         _id: tempId as any,
-        conversationId,
+        conversationId: convId,
+        senderProfileId: meProfileIdRef.current as any,
         body: trimmed,
         createdAt: Date.now(),
         optimistic: true,
       };
       helpers?.addOptimisticMessage?.(optimistic);
       try {
-        const result = await sendMutation({ conversationId, body: trimmed });
-        const realId = (result as any).messageId || result; // server returns { ok, messageId }
+        const result = await sendMutation({
+          conversationId: convId,
+          body: trimmed,
+        });
+        const realId = (result as any)?.messageId || result;
         helpers?.resolveOptimistic?.(optimistic._id as any, {
           ...optimistic,
           _id: realId as any,
           optimistic: false,
-          // Keep as sent (no deliveredAt yet). Include sender to preserve isMine
-          senderProfileId:
-            (optimistic as any).senderProfileId || meProfileIdRef.current,
-          // deliveredAt intentionally omitted here to allow ✓ (single) state until receipt
         });
       } catch (e) {
         helpers?.failOptimistic?.(optimistic._id as any);
+        throw e;
       }
     },
     [conversationId, sendMutation, helpers],

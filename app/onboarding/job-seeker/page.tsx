@@ -313,21 +313,6 @@ export default function JobSeekerOnboarding() {
             />
             {errors.name && <p className="text-red-500 text-sm">{errors.name}</p>}
 
-            <label className="block text-sm font-medium mb-2">Contact Number</label>
-            <div className="flex items-center gap-2">
-              <div className="bg-white border border-gray-300 rounded-lg px-3 py-2 text-black">+91</div>
-              <Input
-                name="contactNumber"
-                inputMode="numeric"
-                placeholder="10-digit mobile"
-                value={formData.contactNumber}
-                onChange={handleChange}
-                className="bg-white text-black"
-                maxLength={10}
-              />
-            </div>
-            {errors.contactNumber && <p className="text-red-500 text-sm">{errors.contactNumber}</p>}
-
             <label className="block text-sm font-medium mb-2">Date of Birth</label>
             <Input
               type="date"

@@ -1,20 +1,19 @@
 'use client';
 // Job Seeker Dashboard main entry point
-import { useState, useMemo, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { Search, Grid3X3, FileText } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import { JobSeekerHeader } from '@/components/job-seeker/header';
+import { useMe } from '@/components/providers/me-provider';
 import { Input } from '@/components/ui/input';
+import { JobCard } from '@/components/ui/job-card';
 import { DashboardHeaderSkeleton, JobCardSkeleton } from '@/components/ui/skeleton';
 import { api } from '@/convex/_generated/api';
-import { useCachedConvexQuery } from '@/hooks/useCachedConvexQuery';
-import { useMe } from '@/components/providers/me-provider';
-import { JobSeekerHeader } from '@/components/job-seeker/header';
 import type { Id } from '@/convex/_generated/dataModel';
-import { useDebounce } from '@/lib/hooks/useDebounce';
-import { JobCard } from '@/components/ui/job-card';
 import { useToast } from '@/hooks/use-toast';
+import { useCachedConvexQuery } from '@/hooks/useCachedConvexQuery';
+import { useDebounce } from '@/lib/hooks/useDebounce';
 import type { EnrichedJob } from '@/types/jobs';
+import { FileText, Grid3X3, Search } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
 
 const filterOptions = [
   { id: 'for-you', icon: Grid3X3, label: 'For you' },

@@ -16,19 +16,55 @@ export const JobCard = ({
   onDelete: () => void;
   onClose: () => void;
 }) => {
+  // Normalize fields to support multiple job shapes
+  const companyName: string = job?.companyName ?? job?.company?.name ?? 'Company';
+  const companyLogo: string | undefined = job?.companyLogo ?? job?.company?.photoUrl ?? undefined;
+  const title: string = job?.title ?? 'Untitled Job';
+  const description: string = typeof job?.description === 'string' ? job.description : '';
+  const typeLabel: string = job?.type ?? job?.jobType ?? '';
+  const locationLabel: string = (() => {
+    const loc = job?.location;
+    if (!loc) return '';
+    if (typeof loc === 'string') return loc;
+    if (typeof loc === 'object') {
+      const city = loc?.city;
+      const locality = loc?.locality;
+      return [locality, city].filter(Boolean).join(', ');
+    }
+    return '';
+  })();
+  const salaryLabel: string = (() => {
+    const s = job?.salary;
+    if (!s) return '';
+    if (typeof s === 'string') return s;
+    const min = typeof s?.min === 'number' ? s.min : undefined;
+    const max = typeof s?.max === 'number' ? s.max : undefined;
+    const fmt = (n: number) =>
+      new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(n);
+    if (min && max) return `₹${fmt(min)}–₹${fmt(max)}`;
+    if (min) return `₹${fmt(min)}+`;
+    if (max) return `Up to ₹${fmt(max)}`;
+    return '';
+  })();
+  const skills: string[] = Array.isArray(job?.skills)
+    ? (job.skills as string[])
+    : Array.isArray(job?.educationRequirements)
+      ? (job.educationRequirements as string[])
+      : [];
+
   return (
     <Card className="w-full max-w-2xl mx-auto bg-white shadow-lg rounded-lg border">
       <CardHeader className="flex flex-row items-center justify-between p-6 bg-gray-50 rounded-t-lg">
         <div className="flex items-center space-x-4">
           <Avatar>
-            <AvatarImage src={job.companyLogo} alt={job.companyName} />
-            <AvatarFallback>{job.companyName.charAt(0)}</AvatarFallback>
+            {companyLogo ? <AvatarImage src={companyLogo} alt={companyName} /> : null}
+            <AvatarFallback>{(companyName || 'C').charAt(0)}</AvatarFallback>
           </Avatar>
           <div>
             <CardTitle className="text-2xl font-bold text-gray-800">
-              {job.title}
+              {title}
             </CardTitle>
-            <p className="text-sm text-gray-500">{job.companyName}</p>
+            <p className="text-sm text-gray-500">{companyName}</p>
           </div>
         </div>
         <div className="flex space-x-2">
@@ -51,13 +87,13 @@ export const JobCard = ({
             </h3>
             <div className="space-y-2 text-sm text-gray-600">
               <p>
-                <strong>Location:</strong> {job.location}
+                <strong>Location:</strong> {locationLabel}
               </p>
               <p>
-                <strong>Type:</strong> {job.type}
+                <strong>Type:</strong> {typeLabel}
               </p>
               <p>
-                <strong>Salary:</strong> {job.salary}
+                <strong>Salary:</strong> {salaryLabel}
               </p>
             </div>
           </div>
@@ -65,13 +101,13 @@ export const JobCard = ({
             <h3 className="text-lg font-semibold text-gray-700 mb-2">
               Description
             </h3>
-            <p className="text-sm text-gray-600">{job.description}</p>
+            <p className="text-sm text-gray-600">{description}</p>
           </div>
         </div>
         <div className="mt-6">
           <h3 className="text-lg font-semibold text-gray-700 mb-2">Skills</h3>
           <div className="flex flex-wrap gap-2">
-            {job.skills.map((skill: string) => (
+            {skills.map((skill: string) => (
               <Badge key={skill} variant="secondary">
                 {skill}
               </Badge>

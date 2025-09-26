@@ -79,7 +79,7 @@ export const DashboardError: React.FC<DashboardErrorProps> = ({
       <div className={containerClasses}>
         <div className={variant === 'company' ? 'p-6 space-y-4' : 'space-y-4'}>
           <Alert variant="default" className="text-left">
-            <AlertTitle>{code === 'NETWORK_ERROR' || code === 'TIMEOUT' ? 'Connection issue' : 'Dashboard Loading...'}</AlertTitle>
+            <AlertTitle>{code === 'NETWORK_ERROR' || code === 'TIMEOUT' ? 'Loading...' : 'Dashboard Loading...'}</AlertTitle>
             {/* <AlertDescription>
               <span className="block text-sm font-medium mb-1">{message || (code === 'NETWORK_ERROR' ? 'We’re having trouble reaching the server.' : 'An unexpected error occurred.')}</span>
               {code && <span className="text-xs text-gray-600">Code: {code}</span>}
