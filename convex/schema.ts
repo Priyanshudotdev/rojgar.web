@@ -38,7 +38,10 @@ const NotificationTypeEnum = v.union(
   v.literal('chat:conversation_started'),
   v.literal('application:submitted'),
 );
-const RecipientTypeEnum = v.union(v.literal('company'), v.literal('job-seeker'));
+const RecipientTypeEnum = v.union(
+  v.literal('company'),
+  v.literal('job-seeker'),
+);
 
 export default defineSchema({
   users: defineTable({
@@ -180,6 +183,9 @@ export default defineSchema({
     lastMessageId: v.optional(v.id('messages')),
     unreadA: v.number(), // unread count for participantA
     unreadB: v.number(), // unread count for participantB
+    // Typing indicator timestamps (ephemeral semantics; client treats as valid for ~5s)
+    typingAAt: v.optional(v.number()),
+    typingBAt: v.optional(v.number()),
     createdAt: v.number(),
     initiatedBy: v.optional(v.id('profiles')),
     lastNotificationAt: v.optional(v.number()),

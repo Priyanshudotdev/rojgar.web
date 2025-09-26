@@ -48,8 +48,15 @@ export function useConversations(pageSize = 20) {
 
   const { data, isLoading, error } = useCachedConvexQuery(
     api.chat.listConversationsForProfile,
-    // Updated server signature: using dual cursors (cursorA/cursorB) removed in refactor, keep compatibility
-    { cursorA: cursor, cursorB: cursor, limit: pageSize } as any,
+    // Only include cursors when defined; passing null triggers validator errors
+    ((c) => {
+      const base: any = { limit: pageSize };
+      if (typeof c === 'string') {
+        base.cursorA = c;
+        base.cursorB = c;
+      }
+      return base;
+    })(cursor as any),
     { key: 'chat:conversations', ttlMs: 30_000, persist: false },
   );
 
@@ -85,6 +92,7 @@ export function useConversations(pageSize = 20) {
 export function useMessages(
   conversationId: Id<'conversations'> | undefined,
   pageSize = 30,
+  opts?: { currentProfileId?: Id<'profiles'> },
 ) {
   const [cursor, setCursor] = useState<string | null>(null); // older messages cursor
   const [loadingMore, setLoadingMore] = useState(false);
@@ -106,7 +114,6 @@ export function useMessages(
     if (!data || !conversationId) return;
     const payload = data as any;
     const messages = payload.messages as MessageRecord[];
-    const pageInfo = payload.pageInfo as { nextCursor: string | null };
 
     if (cursor === null) {
       setItems(messages);
@@ -125,7 +132,7 @@ export function useMessages(
 
   const loadOlder = useCallback(() => {
     if (loadingMore) return;
-    const nextCursor = (data as any)?.pageInfo?.nextCursor as string | null;
+    const nextCursor = (data as any)?.nextCursor as string | null;
     if (!nextCursor) return;
     setLoadingMore(true);
     setCursor(nextCursor);
@@ -157,6 +164,30 @@ export function useMessages(
     );
   }, []);
 
+  // Auto-mark delivery for peer messages
+  const markBatch = useMutation(api.chat.markMessagesAsDelivered);
+  const batchPendingRef = useRef(false);
+  useEffect(() => {
+    if (!conversationId || !items.length || batchPendingRef.current) return;
+    const myId = opts?.currentProfileId as any;
+    if (!myId) return;
+    const toDeliver = items
+      .filter((m) => {
+        const sender: any = (m as any).senderProfileId || (m as any).senderId;
+        return !m.optimistic && !m.deliveredAt && sender && sender !== myId;
+      })
+      .map((m) => m._id as any);
+    if (toDeliver.length === 0) return;
+    batchPendingRef.current = true;
+    (async () => {
+      try {
+        await markBatch({ messageIds: toDeliver });
+      } finally {
+        batchPendingRef.current = false;
+      }
+    })();
+  }, [conversationId, items, opts?.currentProfileId, markBatch]);
+
   return {
     messages: items,
     isLoading,
@@ -170,6 +201,71 @@ export function useMessages(
   } as const;
 }
 
+export function useTypingIndicator(
+  conversationId: Id<'conversations'> | undefined,
+  currentProfileId?: Id<'profiles'>,
+) {
+  const { data } = useCachedConvexQuery(
+    api.chat.getConversationWithParticipants,
+    conversationId ? { conversationId } : 'skip',
+    {
+      key: `chat:convo:${conversationId}:withParticipants`,
+      ttlMs: 5000,
+      persist: false,
+    },
+  );
+  const setTyping = useMutation(api.chat.setTypingIndicator);
+  const convoWrap = data as any;
+  const convo = convoWrap?.conversation as any;
+  const otherTypingTs = (() => {
+    if (!convo) return 0;
+    if (!currentProfileId)
+      return Math.max(convo.typingAAt || 0, convo.typingBAt || 0);
+    const amA = convo.participantA === currentProfileId;
+    return amA ? convo.typingBAt || 0 : convo.typingAAt || 0;
+  })();
+  const isOtherTyping = otherTypingTs && Date.now() - otherTypingTs < 5000;
+  const otherParticipantName: string | undefined = (() => {
+    if (!convoWrap) return undefined;
+    const amA = convoWrap.conversation?.participantA === currentProfileId;
+    const other = amA ? convoWrap.participantB : convoWrap.participantA;
+    return other?.company?.companyName || other?.name || undefined;
+  })();
+  const publish = useCallback(async () => {
+    if (!conversationId) return;
+    try {
+      await setTyping({ conversationId });
+    } catch {}
+  }, [conversationId, setTyping]);
+  return { isOtherTyping, setTyping: publish, otherParticipantName } as const;
+}
+
+export function useTypingPublisher(
+  conversationId: Id<'conversations'> | undefined,
+  currentProfileId?: Id<'profiles'>,
+) {
+  const setTyping = useMutation(api.chat.setTypingIndicator);
+  const lastSentRef = useRef(0);
+  const timeoutRef = useRef<any>(null);
+  const touch = useCallback(() => {
+    const now = Date.now();
+    if (now - lastSentRef.current > 2000) {
+      lastSentRef.current = now;
+      if (conversationId) setTyping({ conversationId });
+    }
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => {
+      // let it expire naturally on clients after ~5s
+    }, 5000);
+  }, [conversationId, setTyping]);
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
+  return { touch } as const;
+}
+
 // useSendMessage -------------------------------------------------------------
 export function useSendMessage(
   conversationId: Id<'conversations'> | undefined,
@@ -180,6 +276,16 @@ export function useSendMessage(
   },
 ) {
   const sendMutation = useMutation(api.chat.sendMessage);
+  const meProfileIdRef = useRef<Id<'profiles'> | undefined>(undefined);
+  // Best-effort: try to derive me.profile from a global if available in app context
+  // This file avoids importing providers to keep hooks decoupled; runtime may set window.__meProfileId
+  useEffect(() => {
+    try {
+      const anyWin: any = window as any;
+      if (anyWin && anyWin.__meProfileId)
+        meProfileIdRef.current = anyWin.__meProfileId as Id<'profiles'>;
+    } catch {}
+  }, []);
 
   return useCallback(
     async (body: string) => {
@@ -202,7 +308,10 @@ export function useSendMessage(
           ...optimistic,
           _id: realId as any,
           optimistic: false,
-          deliveredAt: Date.now(),
+          // Keep as sent (no deliveredAt yet). Include sender to preserve isMine
+          senderProfileId:
+            (optimistic as any).senderProfileId || meProfileIdRef.current,
+          // deliveredAt intentionally omitted here to allow ✓ (single) state until receipt
         });
       } catch (e) {
         helpers?.failOptimistic?.(optimistic._id as any);

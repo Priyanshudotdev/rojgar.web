@@ -2,33 +2,48 @@ import { mutation, query } from './_generated/server';
 import { v } from 'convex/values';
 import type { Id } from './_generated/dataModel';
 
-// Lazy inline invocation to avoid circular import issues; use dynamic require pattern
-async function createNotification(ctx: any, payload: any) {
+// ---------------------------------------------------------------------------
+// Notification helpers (explicit – no inter-mutation invocation)
+// ---------------------------------------------------------------------------
+function insertNotificationRecord(ctx: any, doc: any) {
+  return ctx.db.insert('notifications', {
+    read: false,
+    createdAt: Date.now(),
+    ...doc,
+  });
+}
+async function notifyProfile(
+  ctx: any,
+  payload: {
+    recipientProfileId: Id<'profiles'>;
+    recipientType: 'company' | 'job-seeker';
+    type: string;
+    title: string;
+    body: string;
+    jobId?: Id<'jobs'>;
+    applicationId?: Id<'applications'>;
+    conversationId?: Id<'conversations'>;
+    senderId?: Id<'profiles'>;
+  },
+) {
+  const base = {
+    profileId: payload.recipientProfileId,
+    recipientType: payload.recipientType,
+    type: payload.type,
+    title: payload.title,
+    body: payload.body,
+    jobId: payload.jobId,
+    applicationId: payload.applicationId,
+    conversationId: payload.conversationId,
+    senderId: payload.senderId,
+  } as any;
+  if (payload.recipientType === 'company') {
+    base.companyId = payload.recipientProfileId; // maintain legacy companyId for old queries
+  }
   try {
-    await (ctx as any).runMutation?.(
-      // If runMutation helper not available, fallback to direct insert using schema fields
-      'notifications:createNotification',
-      payload,
-    );
-  } catch {
-    // Fallback: direct insert (best-effort)
-    try {
-      await ctx.db.insert('notifications', {
-        profileId: payload.recipientProfileId,
-        recipientType: payload.recipientType,
-        type: payload.type,
-        title: payload.title,
-        body: payload.body,
-        jobId: payload.jobId,
-        applicationId: payload.applicationId,
-        conversationId: payload.conversationId,
-        senderId: payload.senderId,
-        read: false,
-        createdAt: Date.now(),
-      });
-    } catch (e) {
-      console.error('Fallback notification insert failed', e);
-    }
+    await insertNotificationRecord(ctx, base);
+  } catch (e) {
+    console.error('notifyProfile failed', e);
   }
 }
 
@@ -117,7 +132,7 @@ const ProfileId = v.id('profiles');
 
 async function notifyNewMessage(ctx: any, convo: any, message: any) {
   try {
-    if (message.kind !== 'user') return; // system messages handled separately
+    if (message.kind !== 'user') return;
     const recipientProfileId =
       message.senderId === convo.participantA
         ? convo.participantB
@@ -125,14 +140,14 @@ async function notifyNewMessage(ctx: any, convo: any, message: any) {
     const recipientProfile = await ctx.db.get(recipientProfileId);
     const senderProfile = await ctx.db.get(message.senderId);
     if (!recipientProfile || !senderProfile) return;
-    const recipientType = recipientProfile.companyData
+    const recipientType: 'company' | 'job-seeker' = recipientProfile.companyData
       ? 'company'
       : 'job-seeker';
     const type =
       recipientType === 'company'
         ? 'chat:new_message'
         : 'chat:new_message_from_company';
-    await createNotification(ctx, {
+    await notifyProfile(ctx, {
       recipientProfileId,
       recipientType,
       type,
@@ -164,6 +179,41 @@ export const ensureConversation = mutation({
       args.participantB,
     );
     const pairKey = ConversationIdentifier.pairKey(A, B);
+    // Require application context or a prior application between participants (Comment 10)
+    if (!args.applicationId) {
+      // Determine roles (cast to any to avoid wide union from ctx.db.get)
+      const profA: any = await ctx.db.get(A);
+      const profB: any = await ctx.db.get(B);
+      const company: any = profA?.companyData
+        ? profA
+        : profB?.companyData
+          ? profB
+          : null;
+      const seeker: any = profA?.jobSeekerData
+        ? profA
+        : profB?.jobSeekerData
+          ? profB
+          : null;
+      if (!company || !seeker)
+        throw new Error('FORBIDDEN: role resolution failed');
+      // Check any application linking seeker to company
+      const seekerApps: any[] = await ctx.db
+        .query('applications')
+        .withIndex('by_jobSeekerId', (q: any) =>
+          q.eq('jobSeekerId', seeker._id),
+        )
+        .collect();
+      let linked = false;
+      for (const a of seekerApps) {
+        const job: any = await ctx.db.get(a.jobId);
+        if (job && job.companyId === company._id) {
+          linked = true;
+          break;
+        }
+      }
+      if (!linked)
+        throw new Error('FORBIDDEN: no application linking participants');
+    }
     // Fast path: by applicationId
     if (args.applicationId) {
       const byApp = await ctx.db
@@ -198,6 +248,8 @@ export const ensureConversation = mutation({
       lastMessageId: undefined,
       unreadA: 0,
       unreadB: 0,
+      typingAAt: undefined,
+      typingBAt: undefined,
       createdAt: now,
     });
     return id;
@@ -219,6 +271,33 @@ export const sendMessage = mutation({
     }
     const trimmed = body.trim();
     if (!trimmed) throw new Error('EMPTY_BODY');
+    // Enforce application presence (Comment 10)
+    if (!convo.applicationId) {
+      throw new Error('FORBIDDEN: conversation missing application context');
+    }
+    // First user message must be from company participant (Comment 4)
+    const existingUserMsg = await ctx.db
+      .query('messages')
+      .withIndex('by_conversation_createdAt', (q: any) =>
+        q.eq('conversationId', conversationId),
+      )
+      .take(5); // small window
+    const anyUser = existingUserMsg.some((m: any) => m.kind === 'user');
+    if (!anyUser) {
+      // Determine which participant is company
+      const profA: any = await ctx.db.get(convo.participantA);
+      const profB: any = await ctx.db.get(convo.participantB);
+      const companyParticipant = profA?.companyData
+        ? profA?._id
+        : profB?.companyData
+          ? profB?._id
+          : undefined;
+      if (!companyParticipant)
+        throw new Error('FORBIDDEN: company participant not found');
+      if (senderProfile._id !== companyParticipant) {
+        throw new Error('FORBIDDEN: job seeker cannot send first message');
+      }
+    }
     const now = Date.now();
     const messageId = await ctx.db.insert('messages', {
       conversationId,
@@ -226,7 +305,7 @@ export const sendMessage = mutation({
       body: trimmed,
       kind: 'user',
       createdAt: now,
-      deliveredAt: now,
+      deliveredAt: undefined,
       readAt: undefined,
     });
     const unreadA =
@@ -272,12 +351,13 @@ export const sendSystemMessage = mutation({
     if (!trimmed) throw new Error('EMPTY_BODY');
     const messageId = await ctx.db.insert('messages', {
       conversationId,
-      senderId: convo.participantA,
+      senderId: convo.participantA, // retained for backward compat
       body: trimmed,
       kind: 'system',
       createdAt: now,
       deliveredAt: now,
       readAt: now,
+      metadata: { source: 'system' },
     });
     await ctx.db.patch(conversationId, {
       lastMessageAt: now,
@@ -286,11 +366,17 @@ export const sendSystemMessage = mutation({
     // Notify both participants (excluding sender context) with a conversation started / system event type
     const convoFetched = await ctx.db.get(conversationId);
     if (convoFetched) {
-      for (const participant of [convoFetched.participantA, convoFetched.participantB]) {
-        await createNotification(ctx, {
+      for (const participant of [
+        convoFetched.participantA,
+        convoFetched.participantB,
+      ]) {
+        const prof = await ctx.db.get(participant);
+        const recipientType: 'company' | 'job-seeker' = prof?.companyData
+          ? 'company'
+          : 'job-seeker';
+        await notifyProfile(ctx, {
           recipientProfileId: participant,
-          // Recipient type inference (best-effort; actual role to be determined externally if needed)
-          recipientType: 'job-seeker',
+          recipientType,
           type: 'chat:conversation_started',
           title: 'System update',
           body: body.slice(0, 120),
@@ -305,50 +391,15 @@ export const sendSystemMessage = mutation({
 });
 
 // Application status update system message helper
+// Deprecated: use jobs.updateApplicationStatus as the single source of truth (Comment 5)
 export const sendApplicationStatusUpdate = mutation({
   args: {
     conversationId: v.id('conversations'),
     applicationId: v.id('applications'),
     newStatus: v.string(),
-    note: v.optional(v.string()),
   },
-  handler: async (ctx, { conversationId, applicationId, newStatus, note }) => {
-    const convo: any = await ctx.db.get(conversationId);
-    if (!convo) throw new Error('CONVO_NOT_FOUND');
-    if (convo.applicationId !== applicationId) {
-      throw new Error('MISMATCHED_APPLICATION');
-    }
-    const statusMsg = `Application status updated to ${newStatus}${note ? ' - ' + note : ''}`;
-    const now = Date.now();
-    const messageId = await ctx.db.insert('messages', {
-      conversationId,
-      senderId: convo.participantA,
-      body: statusMsg,
-      kind: 'system',
-      createdAt: now,
-      deliveredAt: now,
-      readAt: now,
-      metadata: { kind: 'applicationStatus', newStatus },
-      relatedApplicationId: applicationId,
-    });
-    await ctx.db.patch(conversationId, {
-      lastMessageAt: now,
-      lastMessageId: messageId,
-    });
-    // Notify job seeker specifically (assuming one participant is job seeker)
-    for (const participant of [convo.participantA, convo.participantB]) {
-      await createNotification(ctx, {
-        recipientProfileId: participant,
-        recipientType: 'job-seeker',
-        type: 'application:status_updated',
-        title: 'Application update',
-        body: statusMsg.slice(0, 140),
-        jobId: convo.jobId,
-        applicationId: applicationId,
-        conversationId: convo._id,
-      });
-    }
-    return { ok: true, messageId } as const;
+  handler: async () => {
+    throw new Error('DEPRECATED: use jobs.updateApplicationStatus');
   },
 });
 
@@ -614,6 +665,49 @@ export const markMessageAsDelivered = mutation({
       return { ok: false } as const;
     if (!msg.deliveredAt)
       await ctx.db.patch(messageId, { deliveredAt: Date.now() });
+    return { ok: true } as const;
+  },
+});
+
+// Batch delivery receipts for efficiency when loading many messages
+export const markMessagesAsDelivered = mutation({
+  args: { messageIds: v.array(v.id('messages')) },
+  handler: async (ctx, { messageIds }) => {
+    const caller = await getCallerProfile(ctx);
+    let updated = 0;
+    for (const id of messageIds) {
+      const msg = await ctx.db.get(id);
+      if (!msg) continue;
+      const convo = await ctx.db.get(msg.conversationId);
+      if (!convo) continue;
+      const isParticipant =
+        convo.participantA === caller._id || convo.participantB === caller._id;
+      if (!isParticipant) continue;
+      if (msg.senderId === caller._id) continue; // don't deliver your own
+      if (!msg.deliveredAt) {
+        await ctx.db.patch(id, { deliveredAt: Date.now() });
+        updated++;
+      }
+    }
+    return { ok: true, updated } as const;
+  },
+});
+
+// Typing indicator: update appropriate timestamp for caller
+export const setTypingIndicator = mutation({
+  args: { conversationId: v.id('conversations') },
+  handler: async (ctx, { conversationId }) => {
+    const caller = await getCallerProfile(ctx);
+    const convo: any = await ctx.db.get(conversationId);
+    if (!convo) return { ok: false, reason: 'not_found' } as const;
+    if (convo.participantA !== caller._id && convo.participantB !== caller._id)
+      return { ok: false, reason: 'not_participant' } as const;
+    const now = Date.now();
+    if (convo.participantA === caller._id) {
+      await ctx.db.patch(conversationId, { typingAAt: now });
+    } else {
+      await ctx.db.patch(conversationId, { typingBAt: now });
+    }
     return { ok: true } as const;
   },
 });

@@ -85,15 +85,15 @@ export const DashboardError: React.FC<DashboardErrorProps> = ({
             {autoRetry?.enabled && nextIn !== null && attempt < (autoRetry.maxAttempts ?? 3) && (
               <span className="text-[10px] text-gray-500 px-2 py-1 border rounded">Auto retry in {nextIn}s (#{attempt + 1}/{autoRetry.maxAttempts ?? 3})</span>
             )}
-            {acts.map((act, idx) => {
+            {/* {acts.map((act, idx) => {
               const label = act.label || (act.type === 'retry' ? 'Try Again' : act.type === 'relogin' ? 'Login' : act.type === 'clear-session' ? 'Clear Session' : act.type === 'register' ? 'Register' : 'Action');
               if (act.type === 'retry') return <Button key={idx} onClick={() => onRetry?.()}>{label}</Button>;
               if (act.type === 'relogin') return <Button key={idx} variant="outline" onClick={() => (window.location.href = '/auth/login')}>{label}</Button>;
               if (act.type === 'clear-session') return <Button key={idx} variant="outline" onClick={async () => { try { await fetch('/api/session/clear', { method: 'POST' }); } catch {}; window.location.href = '/auth/login'; }}>{label}</Button>;
               if (act.type === 'register') return <Button key={idx} variant="outline" onClick={() => (window.location.href = act.url || '/auth/register')}>{label}</Button>;
               return null;
-            })}
-            {process.env.NODE_ENV !== 'production' && (
+            })} */}
+            {/* {process.env.NODE_ENV !== 'production' && (
               <Button
                 variant="ghost"
                 onClick={() => {
@@ -102,9 +102,9 @@ export const DashboardError: React.FC<DashboardErrorProps> = ({
                   window.location.href = `mailto:support@traycer.ai?subject=${subject}&body=${body}`;
                 }}
               >Report issue</Button>
-            )}
+            )} */}
           </div>
-          {process.env.NODE_ENV !== 'production' && (
+          {/* {process.env.NODE_ENV !== 'production' && (
             <details className="text-xs text-gray-500 pt-2"><summary className="cursor-pointer select-none">Technical details</summary>
               <div className="pt-2 space-y-1">
                 <div>Timestamp: {ts}</div>
@@ -114,7 +114,7 @@ export const DashboardError: React.FC<DashboardErrorProps> = ({
                 {autoRetry?.enabled && <div>AutoRetry attempt={attempt}</div>}
               </div>
             </details>
-          )}
+          )} */}
         </div>
       </div>
     </div>

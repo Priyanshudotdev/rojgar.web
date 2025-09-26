@@ -30,7 +30,7 @@ export const createNotification = mutation({
     senderId: v.optional(v.id('profiles')),
   },
   handler: async (ctx, args) => {
-    return await insertNotification(ctx, {
+    const base: any = {
       profileId: args.recipientProfileId,
       recipientType: args.recipientType,
       type: args.type,
@@ -40,7 +40,11 @@ export const createNotification = mutation({
       applicationId: args.applicationId,
       conversationId: args.conversationId,
       senderId: args.senderId,
-    });
+    };
+    if (args.recipientType === 'company') {
+      base.companyId = args.recipientProfileId; // backward compatibility
+    }
+    return await insertNotification(ctx, base);
   },
 });
 

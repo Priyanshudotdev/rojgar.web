@@ -501,7 +501,10 @@ export const createApplication = mutation({
       const seekerProfile = await ctx.db.get(args.jobSeekerId);
       const companyProfile = await ctx.db.get(job.companyId);
       const seekerName = seekerProfile?.name ?? 'A candidate';
-      const companyName = companyProfile?.companyData?.companyName || companyProfile?.name || 'Company';
+      const companyName =
+        companyProfile?.companyData?.companyName ||
+        companyProfile?.name ||
+        'Company';
       // Company notification
       await ctx.db.insert('notifications', {
         companyId: job.companyId,
@@ -534,93 +537,81 @@ export const createApplication = mutation({
     try {
       const companyProfileId = job.companyId as Id<'profiles'>;
       const jobSeekerProfileId = args.jobSeekerId as Id<'profiles'>;
-      // Participants stored sorted; replicate minimal logic here to avoid import cycle
-      const a =
+      // Canonical sort
+      const participantA =
         String(companyProfileId) < String(jobSeekerProfileId)
           ? companyProfileId
           : jobSeekerProfileId;
-      const b = a === companyProfileId ? jobSeekerProfileId : companyProfileId;
-      // Check existing conversation by applicationId first
-      const existingByApp = await ctx.db
+      const participantB =
+        participantA === companyProfileId
+          ? jobSeekerProfileId
+          : companyProfileId;
+      const pairKey = `${participantA}:${participantB}`;
+      // Prefer pairKey lookup (Comment 8 optimization)
+      const existingPair = await ctx.db
         .query('conversations')
-        .withIndex('by_applicationId', (q) =>
-          q.eq('applicationId', applicationId),
-        )
-        .collect();
-      let conversationId: Id<'conversations'> | undefined =
-        existingByApp[0]?._id;
+        .withIndex('by_pairKey', (q: any) => q.eq('pairKey', pairKey))
+        .unique();
+      let conversationId: Id<'conversations'> | undefined = existingPair?._id;
+      if (conversationId && existingPair && !existingPair.applicationId) {
+        await ctx.db.patch(existingPair._id, { applicationId });
+      }
       if (!conversationId) {
-        const existing = await ctx.db
-          .query('conversations')
-          .withIndex('by_participantA_lastMessageAt', (q) =>
-            q.eq('participantA', a),
-          )
-          .collect();
-        const match = existing.find((c) => c.participantB === b);
-        if (match) {
-          conversationId = match._id as Id<'conversations'>;
-          // Link applicationId if not already
-          if (!match.applicationId) {
-            await ctx.db.patch(match._id, { applicationId });
-          }
-        } else {
-          const convoNow = Date.now();
-          conversationId = await ctx.db.insert('conversations', {
-            participantA: a,
-            participantB: b,
-            applicationId,
-            jobId: args.jobId,
-            status: 'active',
-            pairKey: `${a}:${b}`,
-            lastMessageAt: convoNow,
-            lastMessageId: undefined,
-            unreadA: 0,
-            unreadB: 0,
-            createdAt: convoNow,
-            initiatedBy: args.jobSeekerId,
-          });
-          // Seed a system message welcoming both parties
-          const systemBody = 'Conversation started for application.';
-          const msgId = await ctx.db.insert('messages', {
-            conversationId,
-            senderId: a, // arbitrary participant for system messages
-            body: systemBody,
-            kind: 'system',
-            createdAt: convoNow,
-            deliveredAt: convoNow,
-            readAt: convoNow,
-            relatedApplicationId: applicationId,
-          });
-          await ctx.db.patch(conversationId, { lastMessageId: msgId });
-          // Conversation started notifications (best effort)
-          try {
-            await ctx.db.insert('notifications', {
-              profileId: a,
-              recipientType: 'job-seeker',
+        const convoNow = Date.now();
+        conversationId = await ctx.db.insert('conversations', {
+          participantA,
+          participantB,
+          applicationId,
+          jobId: args.jobId,
+          status: 'active',
+          pairKey,
+          lastMessageAt: convoNow,
+          lastMessageId: undefined,
+          unreadA: 0,
+          unreadB: 0,
+          createdAt: convoNow,
+          initiatedBy: args.jobSeekerId,
+        });
+        // Seed system message with metadata.source
+        const systemBody = 'Conversation started for application.';
+        const msgId = await ctx.db.insert('messages', {
+          conversationId,
+          senderId: participantA, // arbitrary but stable
+          body: systemBody,
+          kind: 'system',
+          createdAt: convoNow,
+          deliveredAt: convoNow,
+          readAt: convoNow,
+          relatedApplicationId: applicationId,
+          metadata: { source: 'system' },
+        });
+        await ctx.db.patch(conversationId, { lastMessageId: msgId });
+        // Conversation started notifications with correct recipient types & legacy companyId
+        try {
+          const notify = async (
+            recipient: Id<'profiles'>,
+            type: 'company' | 'job-seeker',
+          ) =>
+            ctx.db.insert('notifications', {
+              profileId: recipient,
+              recipientType: type,
+              companyId: type === 'company' ? recipient : undefined,
               type: 'chat:conversation_started',
               title: 'Conversation created',
-              body: 'A new conversation was created for your application.',
+              body:
+                type === 'company'
+                  ? 'A new conversation was created with a candidate.'
+                  : 'A new conversation was created for your application.',
               applicationId,
               conversationId,
               jobId: args.jobId,
               read: false,
               createdAt: convoNow,
             });
-            await ctx.db.insert('notifications', {
-              profileId: b,
-              recipientType: 'company',
-              type: 'chat:conversation_started',
-              title: 'Conversation created',
-              body: 'A new conversation was created with a candidate.',
-              applicationId,
-              conversationId,
-              jobId: args.jobId,
-              read: false,
-              createdAt: convoNow,
-            });
-          } catch (e) {
-            console.error('conversation start notification failed', e);
-          }
+          await notify(companyProfileId, 'company');
+          await notify(jobSeekerProfileId, 'job-seeker');
+        } catch (e) {
+          console.error('conversation start notification failed', e);
         }
       }
     } catch (e) {
@@ -655,7 +646,10 @@ export const updateApplicationStatus = mutation({
     updaterProfileId: v.id('profiles'),
     note: v.optional(v.string()),
   },
-  handler: async (ctx, { applicationId, newStatus, updaterProfileId, note }) => {
+  handler: async (
+    ctx,
+    { applicationId, newStatus, updaterProfileId, note },
+  ) => {
     const app = (await ctx.db.get(applicationId)) as any;
     if (!app) throw new Error('APPLICATION_NOT_FOUND');
     if (app.status === newStatus) return { ok: true, unchanged: true } as const;
@@ -672,12 +666,14 @@ export const updateApplicationStatus = mutation({
     // Find or create conversation to post system message
     let convo = await ctx.db
       .query('conversations')
-      .withIndex('by_applicationId', (q) => q.eq('applicationId', applicationId))
+      .withIndex('by_applicationId', (q) =>
+        q.eq('applicationId', applicationId),
+      )
       .unique();
     if (!convo) {
       // Conversation might not yet exist (should be rare). Create minimal.
-  const a = job.companyId as any;
-  const b = app.jobSeekerId as any;
+      const a = job.companyId as any;
+      const b = app.jobSeekerId as any;
       const participantA = String(a) < String(b) ? a : b;
       const participantB = participantA === a ? b : a;
       const convoNow = now;
@@ -685,7 +681,7 @@ export const updateApplicationStatus = mutation({
         participantA,
         participantB,
         applicationId,
-  jobId: job._id as any,
+        jobId: job._id as any,
         status: 'active',
         pairKey: `${participantA}:${participantB}`,
         lastMessageAt: convoNow,
@@ -710,13 +706,18 @@ export const updateApplicationStatus = mutation({
       metadata: { kind: 'applicationStatus', newStatus, note },
       relatedApplicationId: applicationId,
     });
-    await ctx.db.patch(convo!._id, { lastMessageAt: now, lastMessageId: msgId });
+    await ctx.db.patch(convo!._id, {
+      lastMessageAt: now,
+      lastMessageId: msgId,
+    });
     // Notifications to both parties
     try {
       for (const participant of [convo!.participantA, convo!.participantB]) {
+        const isCompany = participant === (job.companyId as any);
         await ctx.db.insert('notifications', {
           profileId: participant,
-            recipientType: participant === (job.companyId as any) ? 'company' : 'job-seeker',
+          recipientType: isCompany ? 'company' : 'job-seeker',
+          companyId: isCompany ? participant : undefined,
           type: 'application:status_updated',
           title: 'Application status updated',
           body: statusMsg.slice(0, 140),

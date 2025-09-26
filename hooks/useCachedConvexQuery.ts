@@ -25,10 +25,9 @@ export function useCachedConvexQuery<
   let convexData: TData | undefined = undefined;
   let error: unknown = undefined;
   try {
-    convexData = useQuery(
-      queryRef,
-      isSkipped ? (undefined as any) : (args as any),
-    ) as TData | undefined;
+    if (!isSkipped) {
+      convexData = useQuery(queryRef, args as any) as TData | undefined;
+    }
   } catch (e) {
     error = e;
   }
