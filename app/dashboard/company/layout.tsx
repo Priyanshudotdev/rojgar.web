@@ -20,15 +20,15 @@ export default function CompanyDashboardLayout({ children }: { children: React.R
       try {
         const res = await fetch('/api/onboarding/redirect', { cache: 'no-store' });
         if (cancelled) return;
-        if (res.status === 204) { setPathCheck(null); return; }
-        if (!res.ok) { setPathCheck(null); return; }
+        if (res.status === 204) { setPathCheck('none'); return; }
+        if (!res.ok) { setPathCheck('error'); return; }
         const data = await res.json();
         const route = data?.route as string | undefined;
-        setPathCheck(route || null);
-        if (route === '/onboarding/company') window.location.href = route;
-        else if (route && route !== '/dashboard/company') window.location.href = route; // mismatch => server suggested
+        if (!route) { setPathCheck('none'); return; }
+        setPathCheck(route);
+        if (route && route !== '/dashboard/company') window.location.href = route; // navigate if server suggests different route
       } catch {
-        if (!cancelled) setPathCheck(null);
+        if (!cancelled) setPathCheck('error');
       } finally {
         clearTimeout(t);
         if (!cancelled) setChecking(false);
@@ -41,9 +41,14 @@ export default function CompanyDashboardLayout({ children }: { children: React.R
   const showLoading = (loading || checking) && !error && !timedOut;
   if (showLoading) return <DashboardLoading variant="company" onRetry={() => refresh()} onTimeout={() => setTimedOut(true)} />;
   if (timedOut) return <DashboardError variant="company" message="Session validation timed out." code="TIMEOUT" onRetry={() => { setTimedOut(false); refresh(); }} recovery={recovery} />;
-  if (error) return <DashboardError variant="company" message={error} code={errorCode} recovery={recovery} onRetry={() => refresh()} />;
+  if (error) {
+    if (errorCode === 'NETWORK_ERROR' && loading) {
+      return <DashboardLoading variant="company" onRetry={() => refresh()} onTimeout={() => setTimedOut(true)} />;
+    }
+    return <DashboardError variant="company" message={error} code={errorCode} recovery={recovery} onRetry={() => refresh()} />;
+  }
   if (!me || !me.user) return <DashboardError variant="company" message="No active session. Please login." code="NO_SESSION" recovery={[{ type: 'relogin', label: 'Login' }, { type: 'retry', label: 'Retry' }]} onRetry={() => refresh()} />;
-  if (pathCheck === null) return <DashboardError variant="company" message="Failed to validate route access." code="ROUTE_CHECK_FAILED" onRetry={() => refresh()} recovery={recovery} />;
+  if (pathCheck === 'error') return <DashboardError variant="company" message="Failed to validate route access." code="ROUTE_CHECK_FAILED" onRetry={() => refresh()} recovery={recovery} />;
 
   return (
     <div className="h-screen bg-gray-100 flex justify-center items-center">

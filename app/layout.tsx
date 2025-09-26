@@ -1,3 +1,4 @@
+import Image from 'next/image';
 import { cookies } from 'next/headers';
 import ConvexClientProvider from '@/components/ConvexClientProvider';
 import './globals.css';
@@ -32,12 +33,15 @@ export default function RootLayout({
         className="font-sans bg-primary text-white h-screen relative overflow-x-hidden"
       >
         <ConvexClientProvider>
-          <MeProvider>
+          <MeProvider timeoutMs={18000}>
           <div className="fixed inset-0 -z-10">
-            <img
+            <Image
               src="/bg.png"
               alt="Background"
-              className="w-full h-full object-cover"
+              fill
+              sizes="100vw"
+              priority
+              className="object-cover"
             />
           </div>
           <div

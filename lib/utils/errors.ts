@@ -118,7 +118,7 @@ export function getUserFriendlyMessage(err: AuthError): string {
     case 'SESSION_CREATE_FAILED':
       return 'We couldn’t start a session. Please try again.';
     case 'NETWORK_ERROR':
-      return 'Connection issue. Please check your internet and try again.';
+      return 'Loading.';
     case 'UNAUTHORIZED':
       return 'You are not authorized. Please login again.';
     case 'FORBIDDEN':

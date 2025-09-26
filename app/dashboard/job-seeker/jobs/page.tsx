@@ -276,15 +276,9 @@ export default function JobsPage() {
                   <div key={job._id} className="space-y-2">
                     <JobCard
                       job={job}
-                      onDetailsClick={() => router.push(`/job/${job._id}`)}
-                      onShare={async () => {
-                        const url = `${location.origin}/job/${job._id}`;
-                        if (navigator.share) await navigator.share({ title: job.title, url });
-                        else {
-                          await navigator.clipboard.writeText(url);
-                          toast({ title: 'Link copied', description: 'Job link copied to clipboard.' });
-                        }
-                      }}
+                      onClose={() => router.push(`/job/${job._id}`)}
+                      onEdit={() => {}}
+                      onDelete={() => {}}
                     />
                     <div className="flex justify-end">
                       <button

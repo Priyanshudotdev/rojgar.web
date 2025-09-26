@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import type { MeResponse } from '@/app/api/me/route';
 import { redirectGuard } from '@/hooks/useSessionAuthedRedirect';
 import { AuthError, buildBackoff, categorizeError, getRecoveryActions, getUserFriendlyMessage, type ErrorCode } from '@/lib/utils/errors';
@@ -46,6 +46,7 @@ export function MeProvider({ children, initial = undefined, skipInitialFetch = f
   const healthIntervalRef = useRef<any>(null);
   const meRef = useRef<Me | null | undefined>(me);
   const lastEventRef = useRef<number | null>(lastEventTs);
+  const autoRetryRef = useRef<boolean>(false);
 
   const emit = (name: string, detail?: any) => {
     try { window.dispatchEvent(new CustomEvent(name, { detail })); } catch {}
@@ -58,7 +59,7 @@ export function MeProvider({ children, initial = undefined, skipInitialFetch = f
     }
   };
 
-  const fetchMe = async (): Promise<{ kind: 'ok' | 'unauth' | 'error'; code?: ErrorCode }> => {
+  const fetchMe = useCallback(async (): Promise<{ kind: 'ok' | 'unauth' | 'error'; code?: ErrorCode }> => {
     if (inflightRef.current) return inflightRef.current;
     const p = (async () => {
       abortOngoing();
@@ -176,9 +177,9 @@ export function MeProvider({ children, initial = undefined, skipInitialFetch = f
     })();
     inflightRef.current = p;
     return p;
-  };
+  }, [timeoutMs]);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     // Smarter retry: network errors (and timeout) up to 2 attempts, add jitter; single retry for 5xx
     let attempt = 0;
     for (;;) {
@@ -197,7 +198,7 @@ export function MeProvider({ children, initial = undefined, skipInitialFetch = f
       attempt++;
       setRetries(attempt);
     }
-  };
+  }, [fetchMe]);
 
   useEffect(() => { meRef.current = me; }, [me]);
   useEffect(() => { lastEventRef.current = lastEventTs; }, [lastEventTs]);
@@ -230,14 +231,36 @@ export function MeProvider({ children, initial = undefined, skipInitialFetch = f
   }, []);
 
   const loading = me === undefined && !error;
+  // Expose loading=true during transient errors (network/server/timeout) while me is undefined;
+  // for non-transient errors, allow layouts to render error UI.
+  const loadingPending = me === undefined && (!errorCode || errorCode === 'NETWORK_ERROR' || errorCode === 'SERVER_ERROR' || errorCode === 'TIMEOUT');
   const value: MeContextValue = useMemo(
-    () => ({ me, loading, refresh, redirecting, error, errorCode, recovery }),
-    [me, loading, redirecting, error, errorCode, recovery],
+    () => ({ me, loading: loadingPending, refresh, redirecting, error, errorCode, recovery }),
+    [me, loadingPending, refresh, redirecting, error, errorCode, recovery],
   );
+  // On initial transient errors (network/server/timeout), automatically retry once in the background
+  useEffect(() => {
+    if (autoRetryRef.current) return;
+    if (me === undefined && (errorCode === 'NETWORK_ERROR' || errorCode === 'SERVER_ERROR' || errorCode === 'TIMEOUT')) {
+      autoRetryRef.current = true;
+      refresh();
+    }
+  }, [me, errorCode, refresh]);
+  // Make profileId available globally for modules that avoid importing providers
+  useEffect(() => {
+    try {
+      const anyWin: any = window as any;
+      if (me && me.profile && me.profile._id) {
+        anyWin.__meProfileId = me.profile._id;
+      } else {
+        if (anyWin.__meProfileId) delete anyWin.__meProfileId;
+      }
+    } catch {}
+  }, [me?.profile?._id]);
   return (
     <MeContext.Provider value={value}>
       {children}
-      {process.env.NODE_ENV !== 'production' && (
+      {process.env.NODE_ENV !== 'production' && process.env.NEXT_PUBLIC_SHOW_ME_DEBUG === '1' && (
         <div className="fixed bottom-2 right-2 z-50 text-[10px] bg-black/70 text-white px-2 py-1 rounded shadow space-x-2 font-mono">
           <span>{loading ? 'loading' : isRefreshing ? 'refresh' : me ? 'ok' : me === null ? 'unauth' : 'idle'}</span>
           {lastLatency && <span>{lastLatency}ms</span>}

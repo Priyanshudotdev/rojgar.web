@@ -4,12 +4,15 @@ import { FileText, Home, Search, User, MessageCircle } from 'lucide-react';
 import { useUnreadCount } from '../../hooks/useChat';
 import { usePathname, useRouter } from 'next/navigation';
 
+import { useMe } from '../providers/me-provider';
+
 export default function JobSeekerBottomNav() {
   const router = useRouter();
   const pathname = usePathname();
 
   const isActive = (path: string) => pathname === path;
-  const unread = useUnreadCount();
+  const { me } = useMe();
+  const unread = useUnreadCount(me ?? null);
 
   return (
     <nav className="fixed bottom-0 left-0 w-full flex justify-center z-20">
@@ -34,15 +37,7 @@ export default function JobSeekerBottomNav() {
           <span className="text-xs font-medium">Search</span>
         </button>
 
-        <button
-          onClick={() => router.push('/dashboard/job-seeker/jobs')}
-          className={`flex flex-col items-center space-y-1 focus:outline-none ${
-            isActive('/dashboard/job-seeker/jobs') ? 'text-green-600' : 'text-gray-400'
-          }`}
-        >
-          <FileText className="w-5 h-5" />
-          <span className="text-xs font-medium">Jobs</span>
-        </button>
+        {/* Jobs tab removed as requested */}
 
         <button
           onClick={() => router.push('/dashboard/job-seeker/chat')}

@@ -6,9 +6,13 @@ import { useUnreadCount } from '../../../../hooks/useChat';
 import { Input } from '../../../../components/ui/input';
 import { useState } from 'react';
 import { Button } from '../../../../components/ui/button';
+import { useMe } from '@/components/providers/me-provider';
+
+// import { useMe } from '../../../../providers/me-provider';
 
 export default function JobSeekerChatPage() {
-  const unread = useUnreadCount();
+  const { me } = useMe();
+  const unread = useUnreadCount(me ?? null);
   const [search, setSearch] = useState('');
 
   return (

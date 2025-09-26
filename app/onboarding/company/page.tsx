@@ -455,7 +455,7 @@ export default function CompanyOnboardingPage() {
                 onCheckedChange={(checked) => setFormData(prev => ({...prev, agreeToTerms: !!checked}))} 
               />
               <label htmlFor="terms" className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 text-black">
-                I agree to the Naukri's Terms and conditions
+                I agree to the Naukri&apos;s Terms and conditions
               </label>
             </div>
             {errors.agreeToTerms && <p className="text-red-500 text-sm">{errors.agreeToTerms}</p>}

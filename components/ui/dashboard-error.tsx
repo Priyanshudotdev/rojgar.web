@@ -70,30 +70,34 @@ export const DashboardError: React.FC<DashboardErrorProps> = ({
     }
   }, []);
 
+  const containerClasses = variant === 'company'
+    ? 'w-full max-w-md h-full bg-white relative overflow-hidden'
+    : 'w-full max-w-md bg-white rounded-xl p-6 text-black shadow';
+
   return (
     <div className={variant === 'company' ? 'h-screen bg-gray-100 flex justify-center items-center' : 'min-h-screen grid place-items-center px-4 text-center'}>
-      <div className={variant === 'company' ? 'w-full max-w-md h-full bg-white relative overflow-hidden' : 'w-full max-w-md bg-white rounded-xl p-6 text-black shadow'}>
+      <div className={containerClasses}>
         <div className={variant === 'company' ? 'p-6 space-y-4' : 'space-y-4'}>
-          <Alert variant="destructive" className="text-left">
-            <AlertTitle>Dashboard Error</AlertTitle>
-            <AlertDescription>
-              <span className="block text-sm font-medium mb-1">{message || 'An unexpected error occurred.'}</span>
+          <Alert variant="default" className="text-left">
+            <AlertTitle>{code === 'NETWORK_ERROR' || code === 'TIMEOUT' ? 'Connection issue' : 'Dashboard Loading...'}</AlertTitle>
+            {/* <AlertDescription>
+              <span className="block text-sm font-medium mb-1">{message || (code === 'NETWORK_ERROR' ? 'We’re having trouble reaching the server.' : 'An unexpected error occurred.')}</span>
               {code && <span className="text-xs text-gray-600">Code: {code}</span>}
-            </AlertDescription>
+            </AlertDescription> */}
           </Alert>
           <div className="flex gap-2 flex-wrap justify-center pt-1">
             {autoRetry?.enabled && nextIn !== null && attempt < (autoRetry.maxAttempts ?? 3) && (
               <span className="text-[10px] text-gray-500 px-2 py-1 border rounded">Auto retry in {nextIn}s (#{attempt + 1}/{autoRetry.maxAttempts ?? 3})</span>
             )}
-            {/* {acts.map((act, idx) => {
+            {acts.map((act, idx) => {
               const label = act.label || (act.type === 'retry' ? 'Try Again' : act.type === 'relogin' ? 'Login' : act.type === 'clear-session' ? 'Clear Session' : act.type === 'register' ? 'Register' : 'Action');
               if (act.type === 'retry') return <Button key={idx} onClick={() => onRetry?.()}>{label}</Button>;
               if (act.type === 'relogin') return <Button key={idx} variant="outline" onClick={() => (window.location.href = '/auth/login')}>{label}</Button>;
               if (act.type === 'clear-session') return <Button key={idx} variant="outline" onClick={async () => { try { await fetch('/api/session/clear', { method: 'POST' }); } catch {}; window.location.href = '/auth/login'; }}>{label}</Button>;
               if (act.type === 'register') return <Button key={idx} variant="outline" onClick={() => (window.location.href = act.url || '/auth/register')}>{label}</Button>;
               return null;
-            })} */}
-            {/* {process.env.NODE_ENV !== 'production' && (
+            })}
+            {process.env.NODE_ENV !== 'production' && (
               <Button
                 variant="ghost"
                 onClick={() => {
@@ -102,9 +106,9 @@ export const DashboardError: React.FC<DashboardErrorProps> = ({
                   window.location.href = `mailto:support@traycer.ai?subject=${subject}&body=${body}`;
                 }}
               >Report issue</Button>
-            )} */}
+            )}
           </div>
-          {/* {process.env.NODE_ENV !== 'production' && (
+          {process.env.NODE_ENV !== 'production' && (
             <details className="text-xs text-gray-500 pt-2"><summary className="cursor-pointer select-none">Technical details</summary>
               <div className="pt-2 space-y-1">
                 <div>Timestamp: {ts}</div>
@@ -114,7 +118,7 @@ export const DashboardError: React.FC<DashboardErrorProps> = ({
                 {autoRetry?.enabled && <div>AutoRetry attempt={attempt}</div>}
               </div>
             </details>
-          )} */}
+          )}
         </div>
       </div>
     </div>

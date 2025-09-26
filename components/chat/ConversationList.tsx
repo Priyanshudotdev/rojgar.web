@@ -8,6 +8,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { cn } from '../../lib/utils';
 import { Skeleton } from '../ui/skeleton';
 import { filterConversations } from '../../lib/utils/chat-helpers';
+import { useMe } from '../providers/me-provider';
 
 interface ConversationListProps {
   onSelect: (c: { id: string; status?: string }) => void;
@@ -17,7 +18,9 @@ interface ConversationListProps {
 }
 
 export const ConversationList: React.FC<ConversationListProps> = ({ onSelect, activeId, role, searchTerm }) => {
-  const { conversations, isLoading, loadMore, exhausted } = useConversations();
+  const { me } = useMe();
+  const enabled = Boolean(me?.profile);
+  const { conversations, isLoading, loadMore, exhausted } = useConversations(20, enabled);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
   // Intersection observer for infinite scroll
@@ -54,7 +57,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({ onSelect, ac
           </div>
         ) : filtered.length === 0 ? (
           <div className="p-8 text-center text-sm text-gray-500">
-            {searchTerm ? 'No matches' : "You don't have any chats!!"}
+            {searchTerm ? 'No matches' : 'No chats'}
           </div>
         ) : (
           <ul className="divide-y">
@@ -96,7 +99,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({ onSelect, ac
             })}
           </ul>
         )}
-        {!exhausted && (
+        {!exhausted && filtered.length > 0 && (
           <div ref={loadMoreRef} className="p-4 text-center text-xs text-gray-400">Loading more…</div>
         )}
       </div>

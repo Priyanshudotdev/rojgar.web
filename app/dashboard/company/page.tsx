@@ -2,6 +2,7 @@
 "use client";
 
 import Logo from '@/components/ui/logo';
+import Image from 'next/image';
 
 import { useState, useMemo, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
@@ -45,11 +46,22 @@ export default function CompanyDashboardPage() {
     return !!(data.companyName && data.contactPerson && data.companyAddress);
   };
 
-  const { data: jobs } = useCachedConvexQuery(
+  const { data: jobs, isLoading: jobsLoading } = useCachedConvexQuery(
     api.jobs.getJobsWithStatsByCompany,
   companyId ? ({ companyId } as any) : 'skip',
     { key: 'jobsByCompany', ttlMs: 2 * 60 * 1000 }
   );
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'production') {
+      try {
+        console.info('[CompanyDashboard] jobs fetched', {
+          companyId: companyId ?? null,
+          jobsCount: Array.isArray(jobs) ? jobs.length : jobs === undefined ? 'undefined' : 'null',
+        });
+      } catch {}
+    }
+  }, [companyId, jobs]);
 
   const deleteJob = useMutation(api.jobs.deleteJob);
   const closeJob = useMutation(api.jobs.closeJob);
@@ -171,10 +183,11 @@ export default function CompanyDashboardPage() {
         </button>
         <div className="p-6 space-y-5 max-h-[85vh] overflow-y-auto">
           <h2 className="text-xl font-semibold text-black">Edit Employeer Profile</h2>
+
           <div className="flex items-center gap-4">
             <div className="w-20 h-20 rounded-full bg-gray-100 flex items-center justify-center overflow-hidden border">
               {editValues.companyPhotoUrl ? (
-                <img src={editValues.companyPhotoUrl} alt="Employeer" className="w-full h-full object-cover" />
+                <Image src={editValues.companyPhotoUrl} alt="Employeer" width={80} height={80} className="w-full h-full object-cover" />
               ) : (
                 <span className="text-sm text-gray-500">No Image</span>
               )}
@@ -350,7 +363,7 @@ export default function CompanyDashboardPage() {
       <main className="flex-1 px-4 pb-24 pt-2 overflow-y-auto bg-white">
         <h2 className="text-lg font-semibold text-black mb-4">Your Job Postings</h2>
         <div className="space-y-4">
-          {meLoading ? (
+          {meLoading || jobsLoading ? (
             Array.from({ length: 3 }).map((_, i) => <JobCardSkeleton key={i} />)
           ) : !companyId ? (
             <Card className="p-6 bg-white rounded-xl border border-dashed border-gray-300 text-center">
@@ -420,7 +433,7 @@ export default function CompanyDashboardPage() {
                 </Card>
               )))
           }
-          {!meLoading && jobs && jobs.length > 0 && filteredJobs.length === 0 && (
+          {!meLoading && !jobsLoading && jobs && jobs.length > 0 && filteredJobs.length === 0 && (
             <p className="text-sm text-gray-600">No jobs found.</p>
           )}
         </div>

@@ -23,7 +23,7 @@ export function showOtpErrorToast(err: unknown, handlers: Handlers = {}) {
   const description = getUserFriendlyMessage(e);
   const actions = getRecoveryActions(e);
   const titleByCategory = {
-    network: 'Connection issue',
+    network: 'Loading...',
     server: 'Service unavailable',
     auth: 'Invalid input',
     session: 'Session issue',
@@ -106,9 +106,7 @@ export async function withRetry<T>(
   throw lastErr;
 }
 
-export function getServiceStatus(
-  err: unknown,
-): {
+export function getServiceStatus(err: unknown): {
   service: 'twilio';
   unavailable: boolean;
   reason?: 'unconfigured' | 'unavailable';

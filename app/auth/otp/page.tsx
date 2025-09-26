@@ -131,7 +131,7 @@ export default function OTPVerification() {
         <div className="mb-8">
           <h2 className="text-xl font-semibold mb-2">Enter OTP</h2>
           <p className="text-white/80">
-            We've sent a 6-digit code to +91 {phoneNumber}
+            We&apos;ve sent a 6-digit code to +91 {phoneNumber}
           </p>
         </div>
 
@@ -161,7 +161,7 @@ export default function OTPVerification() {
         </Button>
 
         <div className="text-center">
-          <p className="text-sm opacity-75 mb-2">Didn't receive the code?</p>
+          <p className="text-sm opacity-75 mb-2">Didn&apos;t receive the code?</p>
           <Button
             variant="link"
             className="text-white underline p-0 flex items-center gap-2 disabled:opacity-70"

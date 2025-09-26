@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation } from 'convex/react';
 import { Id } from '../convex/_generated/dataModel';
-// After adding chat.ts server module, re-run `npx convex dev` so generated API includes `chat`.
-// Until codegen is refreshed, cast api to any to access chat.* symbols without type errors.
-import { api as generatedApi } from '../convex/_generated/api';
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const api: any = generatedApi;
+import { api } from '../convex/_generated/api';
 import { useCachedConvexQuery } from './useCachedConvexQuery';
 
 // Chat related hooks encapsulating conversation & message logic.
@@ -40,23 +36,36 @@ export interface MessageRecord {
 }
 
 // useConversations -----------------------------------------------------------
-export function useConversations(pageSize = 20) {
+export function useConversations(pageSize = 20, enabled = true) {
   const [cursor, setCursor] = useState<string | null>(null);
   const [pendingCursor, setPendingCursor] = useState<string | null>(null);
   const [items, setItems] = useState<ConversationSummary[]>([]);
   const [exhausted, setExhausted] = useState(false);
+  // Try to derive caller profile id from global (set by MeProvider) to avoid Convex auth dependency
+  const [callerProfileId, setCallerProfileId] = useState<any>(undefined);
+  useEffect(() => {
+    try {
+      const anyWin: any = window as any;
+      if (anyWin && anyWin.__meProfileId)
+        setCallerProfileId(anyWin.__meProfileId);
+    } catch {}
+  }, []);
 
+  const finalEnabled = enabled && Boolean(callerProfileId);
   const { data, isLoading, error } = useCachedConvexQuery(
     api.chat.listConversationsForProfile,
     // Only include cursors when defined; passing null triggers validator errors
-    ((c) => {
-      const base: any = { limit: pageSize };
-      if (typeof c === 'string') {
-        base.cursorA = c;
-        base.cursorB = c;
-      }
-      return base;
-    })(cursor as any),
+    finalEnabled
+      ? ((c) => {
+          const base: any = { limit: pageSize };
+          if (typeof c === 'string') {
+            base.cursorA = c;
+            base.cursorB = c;
+          }
+          if (callerProfileId) base.profileId = callerProfileId;
+          return base;
+        })(cursor as any)
+      : ('skip' as any),
     { key: 'chat:conversations', ttlMs: 30_000, persist: false },
   );
 
@@ -322,10 +331,10 @@ export function useSendMessage(
 }
 
 // useUnreadCount -------------------------------------------------------------
-export function useUnreadCount() {
+export function useUnreadCount(me: { profile: any } | null) {
   const { data } = useCachedConvexQuery(
     api.chat.getUnreadCount,
-    {},
+    me?.profile?._id ? ({ profileId: me.profile._id } as any) : 'skip',
     { key: 'chat:unread', ttlMs: 10_000, persist: false },
   );
   return (data as any)?.total ?? 0;
@@ -352,7 +361,7 @@ export function useConversationActions(
 ) {
   const update = useMutation(api.chat.updateConversationStatus);
   const setStatus = useCallback(
-    async (status: string) => {
+    async (status: 'active' | 'archived' | 'blocked') => {
       if (!conversationId) return;
       await update({ conversationId, status });
     },

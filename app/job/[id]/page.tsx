@@ -63,6 +63,14 @@ export default function JobDetailsPage() {
   const [showFab, setShowFab] = useState(false);
   const createApplication = useMutation(api.jobs.createApplication);
 
+  // Scroll listener (proper effect with cleanup)
+  useEffect(() => {
+    const handler = () => setShowFab(window.scrollY > 280);
+    window.addEventListener('scroll', handler, { passive: true });
+    handler();
+    return () => window.removeEventListener('scroll', handler);
+  }, []);
+
   const onShare = async () => {
     const url = typeof window !== 'undefined' ? window.location.href : '';
     try {
@@ -126,13 +134,7 @@ export default function JobDetailsPage() {
 
   const canApplyCore = job.status === 'Active' && !applied && !appliedLocal && !submitting;
 
-  // Scroll listener (proper effect with cleanup)
-  useEffect(() => {
-    const handler = () => setShowFab(window.scrollY > 280);
-    window.addEventListener('scroll', handler, { passive: true });
-    handler();
-    return () => window.removeEventListener('scroll', handler);
-  }, []);
+
 
   // Requirement icon mapping (extensible for future categories)
   const renderRequirement = (req: string) => {

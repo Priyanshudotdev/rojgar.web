@@ -483,9 +483,13 @@ export const listConversationsForProfile = query({
     limit: v.optional(v.number()),
     cursorA: v.optional(v.string()),
     cursorB: v.optional(v.string()),
+    profileId: v.optional(v.id('profiles')),
   },
-  handler: async (ctx, { limit, cursorA, cursorB }) => {
-    const caller = await getCallerProfile(ctx);
+  handler: async (ctx, { limit, cursorA, cursorB, profileId }) => {
+    const caller = profileId
+      ? await ctx.db.get(profileId)
+      : await getCallerProfile(ctx);
+    if (!caller) throw new Error('PROFILE_NOT_FOUND');
     const pageLimit = Math.min(100, limit ?? 30);
     const qA = ctx.db
       .query('conversations')
@@ -713,19 +717,18 @@ export const setTypingIndicator = mutation({
 });
 
 export const getUnreadCount = query({
-  args: {},
-  handler: async (ctx) => {
-    const caller = await getCallerProfile(ctx);
+  args: { profileId: v.id('profiles') },
+  handler: async (ctx, { profileId }) => {
     const asA = await ctx.db
       .query('conversations')
       .withIndex('by_participantA_lastMessageAt', (q: any) =>
-        q.eq('participantA', caller._id),
+        q.eq('participantA', profileId),
       )
       .collect();
     const asB = await ctx.db
       .query('conversations')
       .withIndex('by_participantB_lastMessageAt', (q: any) =>
-        q.eq('participantB', caller._id),
+        q.eq('participantB', profileId),
       )
       .collect();
     let total = 0;

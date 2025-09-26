@@ -8,15 +8,17 @@ import { MessageCircle } from 'lucide-react';
 
 const navItems = [
   { href: '/dashboard/company', icon: Home, label: 'Dashboard' },
-  { href: '/dashboard/company/jobs', icon: Briefcase, label: 'Jobs' },
   { href: '/dashboard/company/applicants', icon: Users, label: 'Applicants' },
-  { href: '/dashboard/company/profile', icon: User, label: 'Profile' },
   { href: '/dashboard/company/chat', icon: MessageCircle, label: 'Chat' },
+  { href: '/dashboard/company/profile', icon: User, label: 'Profile' },
 ];
+
+import { useMe } from '../providers/me-provider';
 
 export default function CompanyBottomNav() {
   const pathname = usePathname();
-  const unread = useUnreadCount();
+  const { me } = useMe();
+  const unread = useUnreadCount(me ?? null);
 
   return (
     <div className="absolute bottom-0 left-0 right-0 bg-white border-t z-10">

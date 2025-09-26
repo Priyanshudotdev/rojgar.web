@@ -20,21 +20,29 @@ import { invalidateKeys } from '@/hooks/useInvalidateCachedQuery';
 export default function CompanyJobsIndexPage() {
   const router = useRouter();
   const [companyId, setCompanyId] = useState<Id<'profiles'> | null>(null);
-  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
 
   const { me } = useMe();
   useEffect(() => {
     if (me?.profile?._id) setCompanyId(me.profile._id as Id<'profiles'>);
-    const t = setTimeout(() => setLoading(false), 50);
-    return () => clearTimeout(t);
   }, [me]);
 
-  const { data: jobs } = useCachedConvexQuery(
+  const { data: jobs, isLoading } = useCachedConvexQuery(
     api.jobs.getJobsWithStatsByCompany,
-  companyId ? ({ companyId } as any) : 'skip',
+    companyId ? ({ companyId } as any) : 'skip',
     { key: 'company-jobs', ttlMs: 2 * 60 * 1000 }
   );
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'production') {
+      try {
+        console.info('[CompanyJobsIndex] jobs fetched', {
+          companyId: companyId ?? null,
+          jobsCount: Array.isArray(jobs) ? jobs.length : jobs === undefined ? 'undefined' : 'null',
+        });
+      } catch {}
+    }
+  }, [companyId, jobs]);
 
   const deleteJob = useMutation(api.jobs.deleteJob);
   const closeJob = useMutation(api.jobs.closeJob);
@@ -95,7 +103,7 @@ export default function CompanyJobsIndexPage() {
 
       <main className="px-4 pb-24 pt-2">
         <div className="space-y-4">
-          {loading ? (
+          {isLoading ? (
             Array.from({ length: 3 }).map((_, i) => <JobCardSkeleton key={i} />)
           ) : !companyId ? (
             <Card className="p-6 bg-white rounded-xl border border-dashed border-gray-300 text-center">
@@ -141,7 +149,7 @@ export default function CompanyJobsIndexPage() {
                 </Card>
               ))
           )}
-          {!loading && jobs && filtered.length === 0 && <p className="text-sm text-gray-600">No jobs found.</p>}
+          {!isLoading && jobs && filtered.length === 0 && <p className="text-sm text-gray-600">No jobs found.</p>}
         </div>
       </main>
     </div>

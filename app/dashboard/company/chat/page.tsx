@@ -6,9 +6,11 @@ import { useUnreadCount } from '../../../../hooks/useChat';
 import { Input } from '../../../../components/ui/input';
 import { Button } from '../../../../components/ui/button';
 import { useState } from 'react';
+import { useMe } from '@/components/providers/me-provider';
 
 export default function CompanyChatPage() {
-  const unread = useUnreadCount();
+  const { me } = useMe();
+  const unread = useUnreadCount(me ?? null);
   const [search, setSearch] = useState('');
   const [filtersOpen, setFiltersOpen] = useState(false);
  

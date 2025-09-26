@@ -80,8 +80,7 @@ export default function RoleSelection() {
 
       <div className="space-y-4 px-2 pb-8">
         <p className="text-sm opacity-75 text-center">
-          By clicking 'Continue', you agree to the Rojgar's{' '}
-          <span className="underline">Terms and Conditions</span>
+          By clicking &apos;Continue&apos;, you agree to the Rojgar&apos;s{' '}
         </p>
         
         <Button

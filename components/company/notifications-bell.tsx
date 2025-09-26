@@ -25,7 +25,7 @@ export function CompanyNotificationsBell({ companyId }: { companyId: Id<'profile
     { key: 'company-notifications-list', ttlMs: 15 * 1000 }
   );
   const markAsRead = useMutation(api.notifications.markAsRead);
-  const markAllAsRead = useMutation(api.notifications.markAllAsRead);
+  const markAllAsReadByCompany = useMutation(api.notifications.markAllAsReadByCompany);
 
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -44,7 +44,7 @@ export function CompanyNotificationsBell({ companyId }: { companyId: Id<'profile
           <p className="text-sm font-medium text-gray-800">Notifications</p>
           {(unreadCount ?? 0) > 0 && companyId && (
             <Button variant="ghost" size="sm" className="h-7 px-2 text-gray-700" onClick={async () => {
-              await markAllAsRead({ companyId });
+              await markAllAsReadByCompany({ companyId });
               invalidateKeys(['company-notifications-unread', 'company-notifications-list']);
             }}>
               <CheckCheck className="h-4 w-4 mr-1" /> Mark all read

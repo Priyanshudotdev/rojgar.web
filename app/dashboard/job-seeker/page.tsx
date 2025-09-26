@@ -173,8 +173,9 @@ export default function JobSeekerDashboard() {
                 <JobCard
                   key={job._id}
                   job={job}
-                  onDetailsClick={() => router.push(`/job/${job._id}`)}
-                  onShare={() => handleShare(job)}
+                  onClose={() => router.push(`/job/${job._id}`)}
+                  onEdit={() => {}}
+                  onDelete={() => {}}
                 />
               ))}
           {!loading && jobs && filtered.length === 0 && (
